@@ -159,16 +159,28 @@ def has_sufficient_speech(transcript: str) -> bool:
 # AI PROCESSING FUNCTIONS
 # ============================================================================
 
-async def transcribe_audio(audio_buffer) -> str:
+async def transcribe_audio(audio_buffer, settings: Dict[str, Any]) -> str:
     """Transcribe audio using Whisper with retry logic"""
     max_retries = 2
+    
+    # Get language from settings
+    language_map = {
+        "English": "en",
+        "Spanish": "es",
+        "French": "fr",
+        "German": "de",
+        "Hindi": "hi",
+        "Mandarin": "zh"
+    }
+    language_code = language_map.get(settings.get("audioLanguage", "English"), "en")
+    
     for attempt in range(max_retries):
         try:
             response = await asyncio.to_thread(
                 lambda: openai.audio.transcriptions.create(
                     model="whisper-1",
                     file=audio_buffer,
-                    language="en",
+                    language=language_code,
                     prompt=WHISPER_PROMPT,
                     temperature=0.0
                 )
@@ -192,19 +204,28 @@ async def transcribe_audio(audio_buffer) -> str:
 async def process_transcript_with_ai(
     transcript: str,
     settings: Dict[str, Any],
-    persona_data: Optional[Dict] = None
+    persona_data: Optional[Dict] = None,
+    custom_style_prompt: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Send transcript to OpenAI to intelligently extract question and generate answer.
+    NOW INCLUDES: Resume text, custom response styles, all settings
     Returns: {"has_question": bool, "question": str, "answer": str}
     """
     try:
         # Build system prompt based on settings
-        response_style = settings.get("selectedResponseStyleId", "concise")
-        style_config = RESPONSE_STYLES.get(response_style, RESPONSE_STYLES["concise"])
+        response_style_id = settings.get("selectedResponseStyleId", "concise")
         
-        system_prompt = QUESTION_DETECTION_PROMPT + "\n\n" + style_config["prompt"]
+        # Use custom style prompt if provided, otherwise use default styles
+        if custom_style_prompt:
+            style_prompt = custom_style_prompt
+        else:
+            style_config = RESPONSE_STYLES.get(response_style_id, RESPONSE_STYLES["concise"])
+            style_prompt = style_config["prompt"]
         
+        system_prompt = QUESTION_DETECTION_PROMPT + "\n\n" + style_prompt
+        
+        # Add persona context with resume
         if persona_data:
             system_prompt += f"""
 
@@ -212,22 +233,40 @@ CANDIDATE CONTEXT:
 - Position: {persona_data.get('position', 'N/A')}
 - Company: {persona_data.get('company_name', 'N/A')}
 """
+            
+            # Add company description if available
+            if persona_data.get('company_description'):
+                system_prompt += f"- Company Description: {persona_data.get('company_description')}\n"
+            
+            # Add job description if available
+            if persona_data.get('job_description'):
+                system_prompt += f"- Job Description: {persona_data.get('job_description')}\n"
+            
+            # Add resume text if available
+            if persona_data.get('resume_text'):
+                system_prompt += f"\nCANDIDATE RESUME:\n{persona_data.get('resume_text')}\n"
+                system_prompt += "\nIMPORTANT: Use the resume information to provide accurate, personalized answers about the candidate's experience, skills, and background.\n"
         
+        # Add programming language preference
         prog_lang = settings.get("programmingLanguage", "Python")
         system_prompt += f"\n\nWhen providing code examples, use {prog_lang}."
         
+        # Add custom interview instructions
         if settings.get("interviewInstructions"):
             system_prompt += f"\n\nADDITIONAL INSTRUCTIONS:\n{settings['interviewInstructions']}"
         
+        # Select model based on settings
+        model = settings.get("defaultModel", DEFAULT_MODEL)
+        
         response = await asyncio.to_thread(
             lambda: openai.chat.completions.create(
-                model=DEFAULT_MODEL,
+                model=model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": f"Transcript: {transcript}"}
                 ],
                 temperature=0.5,
-                max_tokens=300,
+                max_tokens=400,
                 timeout=20
             )
         )
@@ -266,18 +305,33 @@ async def get_model_status():
     """Get current model configuration"""
     return {
         "default_provider": DEFAULT_MODEL,
-        "available_providers": {"gpt-4o-mini": True, "gpt-4o": True}
+        "coding_provider": DEFAULT_MODEL,
+        "available_providers": {
+            "gpt-4o-mini": True, 
+            "gpt-4o": True,
+            "gemini-2.0-flash": False  # Not implemented yet
+        }
     }
 
+@app.post("/api/models/set-default")
+async def set_default_model(data: dict):
+    """Set default model (endpoint for compatibility)"""
+    return {"success": True, "provider": data.get("provider", DEFAULT_MODEL)}
+
+@app.post("/api/models/set-coding")
+async def set_coding_model(data: dict):
+    """Set coding model (endpoint for compatibility)"""
+    return {"success": True, "provider": data.get("provider", DEFAULT_MODEL)}
+
 # ============================================================================
-# WEBSOCKET ENDPOINT - FULLY FIXED WITH PROPER STATE MANAGEMENT
+# WEBSOCKET ENDPOINT - ENHANCED WITH FULL SETTINGS & PERSONA SUPPORT
 # ============================================================================
 
 @app.websocket("/ws/live-interview")
 async def websocket_live_interview(websocket: WebSocket):
     """
     WebSocket endpoint for real-time interview assistance.
-    FULLY FIXED: Proper state management, connection stability, and graceful cleanup
+    ENHANCED: Now receives and uses ALL settings and complete persona data including resume_text
     """
     await websocket.accept()
     print("✅ WebSocket connection accepted")
@@ -296,33 +350,32 @@ async def websocket_live_interview(websocket: WebSocket):
             connection_state = new_state
             print(f"🔄 Connection state: {new_state.value}")
     
-    # Session data
+    # Session data - Enhanced to store complete settings and persona
     prev_transcripts = deque(maxlen=10)
     processing_lock = asyncio.Lock()
-    send_lock = asyncio.Lock()  # Prevent concurrent sends
+    send_lock = asyncio.Lock()
     
+    # Default settings (will be overridden by init message)
     settings = {
+        "audioLanguage": "English",
+        "pauseInterval": 2,
+        "advancedQuestionDetection": False,
         "selectedResponseStyleId": "concise",
         "programmingLanguage": "Python",
-        "interviewInstructions": ""
+        "interviewInstructions": "",
+        "codingInstructions": "",
+        "defaultModel": DEFAULT_MODEL,
+        "codingModel": DEFAULT_MODEL,
+        "messageDirection": "bottom",
+        "autoScroll": True
     }
+    
+    # Complete persona data
     persona_data = None
+    custom_style_prompt = None
     recorder = None
     
-    print("✓ WebSocket client connected - initializing...")
-    
-    # Initialize audio recorder
-    try:
-        recorder = ContinuousAudioRecorder(silence_threshold=0.3, fs=16000)
-        recorder.start()
-        print("✓ Audio recorder started")
-    except RuntimeError as e:
-        await websocket.send_json({
-            "type": "error",
-            "message": "Audio device not found. Please enable Stereo Mix in Windows Sound Settings."
-        })
-        await websocket.close()
-        return
+    print("✓ WebSocket client connected - waiting for initialization...")
     
     # Safe send function with state checking
     async def safe_send(data: dict) -> bool:
@@ -341,18 +394,13 @@ async def websocket_live_interview(websocket: WebSocket):
             return False
     
     try:
-        # Send ready message
-        await safe_send({
-            "type": "ready",
-            "message": "Backend ready for audio processing"
-        })
-        
         async def handle_incoming_messages():
             """Handle control messages from client"""
+            nonlocal settings, persona_data, custom_style_prompt, recorder
+            
             try:
                 while await get_state() == ConnectionState.CONNECTED:
                     try:
-                        # Use shorter timeout for more responsive disconnect detection
                         message = await asyncio.wait_for(
                             websocket.receive_text(), 
                             timeout=2.0
@@ -360,25 +408,60 @@ async def websocket_live_interview(websocket: WebSocket):
                         data = json.loads(message)
                         
                         if data.get("type") == "init":
-                            nonlocal settings, persona_data
-                            settings = data.get("settings", settings)
+                            # Update settings with ALL received settings
+                            received_settings = data.get("settings", {})
+                            settings.update(received_settings)
+                            
+                            # Store complete persona data including resume_text
                             persona_data = {
                                 "position": data.get("position", ""),
-                                "company_name": data.get("company_name", "")
+                                "company_name": data.get("company_name", ""),
+                                "company_description": data.get("company_description", ""),
+                                "job_description": data.get("job_description", ""),
+                                "resume_text": data.get("resume_text", ""),
+                                "resume_filename": data.get("resume_filename", "")
                             }
-                            print(f"✓ Session initialized with settings: {settings}")
+                            
+                            # Store custom response style if provided
+                            custom_style_prompt = data.get("custom_style_prompt", None)
+                            
+                            print("=" * 60)
+                            print("🎯 SESSION INITIALIZED")
+                            print("=" * 60)
+                            print(f"📋 Position: {persona_data['position']}")
+                            print(f"🏢 Company: {persona_data['company_name']}")
+                            print(f"📄 Resume: {'✓ Loaded' if persona_data.get('resume_text') else '✗ Not provided'}")
+                            print(f"🎨 Response Style: {settings.get('selectedResponseStyleId', 'concise')}")
+                            print(f"🗣️  Language: {settings.get('audioLanguage', 'English')}")
+                            print(f"⏸️  Pause Interval: {settings.get('pauseInterval', 2)}s")
+                            print(f"💻 Programming Language: {settings.get('programmingLanguage', 'Python')}")
+                            print(f"🤖 AI Model: {settings.get('defaultModel', DEFAULT_MODEL)}")
+                            print(f"🔍 Advanced Detection: {settings.get('advancedQuestionDetection', False)}")
+                            print("=" * 60)
+                            
+                            # Initialize audio recorder now (after settings received)
+                            if not recorder:
+                                try:
+                                    recorder = ContinuousAudioRecorder(silence_threshold=0.3, fs=16000)
+                                    recorder.start()
+                                    print("✓ Audio recorder started")
+                                except RuntimeError as e:
+                                    await safe_send({
+                                        "type": "error",
+                                        "message": "Audio device not found. Please enable Stereo Mix in Windows Sound Settings."
+                                    })
+                                    await set_state(ConnectionState.DISCONNECTING)
+                                    return
                             
                             await safe_send({
                                 "type": "connected",
-                                "message": "Session initialized"
+                                "message": "Session initialized with complete settings and persona data"
                             })
                         
                         elif data.get("type") == "ping":
-                            # Respond to keepalive
                             await safe_send({"type": "pong"})
                             
                     except asyncio.TimeoutError:
-                        # Check connection health
                         if await get_state() != ConnectionState.CONNECTED:
                             break
                         continue
@@ -391,13 +474,19 @@ async def websocket_live_interview(websocket: WebSocket):
                 await set_state(ConnectionState.DISCONNECTING)
         
         async def process_audio():
-            """Process audio chunks with proper state management"""
+            """Process audio chunks with enhanced AI using all settings and persona data"""
             consecutive_empty = 0
             max_empty = 15
             
+            # Wait for initialization
+            while not recorder and await get_state() == ConnectionState.CONNECTED:
+                await asyncio.sleep(0.5)
+            
+            if not recorder:
+                return
+            
             while await get_state() == ConnectionState.CONNECTED:
                 try:
-                    # Check state before processing
                     if await get_state() != ConnectionState.CONNECTED:
                         break
                     
@@ -414,7 +503,6 @@ async def websocket_live_interview(websocket: WebSocket):
                         consecutive_empty = 0
                         chunk_type = getattr(audio_buffer, 'name', 'unknown')
                         
-                        # Skip continuous chunks (no speech detected)
                         if chunk_type == "continuous_chunk.wav":
                             print("⏭️  Skipping continuous chunk")
                             audio_buffer.close()
@@ -424,7 +512,8 @@ async def websocket_live_interview(websocket: WebSocket):
                         start_time = time.time()
                         
                         try:
-                            transcript = await transcribe_audio(audio_buffer)
+                            # Pass settings to transcription
+                            transcript = await transcribe_audio(audio_buffer, settings)
                         finally:
                             audio_buffer.close()
 
@@ -441,17 +530,19 @@ async def websocket_live_interview(websocket: WebSocket):
 
                         prev_transcripts.append(transcript)
 
-                        # Send transcript (check state first)
                         if not await safe_send({
                             "type": "transcript",
                             "text": transcript
                         }):
                             break
 
-                        # Process with AI
+                        # Process with AI using complete settings and persona data
                         ai_start = time.time()
                         result = await process_transcript_with_ai(
-                            transcript, settings, persona_data
+                            transcript, 
+                            settings, 
+                            persona_data,
+                            custom_style_prompt
                         )
                         print(f"⏱️  AI processing: {time.time() - ai_start:.2f}s")
 
@@ -462,17 +553,14 @@ async def websocket_live_interview(websocket: WebSocket):
                             print(f"❓ Question: {result['question']}")
                             print(f"💬 Answer: {result['answer'][:100]}...")
                             
-                            # Send question detection
                             if not await safe_send({
                                 "type": "question_detected",
                                 "question": result["question"]
                             }):
                                 break
                             
-                            # Small delay between messages
                             await asyncio.sleep(0.1)
                             
-                            # Send answer
                             if not await safe_send({
                                 "type": "answer_ready",
                                 "question": result["question"],
@@ -491,17 +579,21 @@ async def websocket_live_interview(websocket: WebSocket):
                         print(f"❌ Audio processing error: {e}")
                     break
         
-        # Run both tasks with proper cancellation
+        # Send initial ready message
+        await safe_send({
+            "type": "ready",
+            "message": "Backend ready - send init message with settings and persona data"
+        })
+        
+        # Run both tasks
         message_task = asyncio.create_task(handle_incoming_messages())
         audio_task = asyncio.create_task(process_audio())
         
-        # Wait for either task to complete
         done, pending = await asyncio.wait(
             [message_task, audio_task],
             return_when=asyncio.FIRST_COMPLETED
         )
         
-        # Update state and cancel remaining tasks
         await set_state(ConnectionState.DISCONNECTING)
         
         for task in pending:
@@ -518,7 +610,6 @@ async def websocket_live_interview(websocket: WebSocket):
     finally:
         await set_state(ConnectionState.DISCONNECTED)
         
-        # Cleanup recorder
         if recorder:
             try:
                 recorder.stop()
@@ -526,7 +617,6 @@ async def websocket_live_interview(websocket: WebSocket):
             except Exception as e:
                 print(f"⚠️  Recorder stop error: {e}")
         
-        # Close websocket gracefully
         try:
             await websocket.close()
         except Exception:
@@ -547,6 +637,7 @@ if __name__ == "__main__":
     print(f"Model: {DEFAULT_MODEL}")
     print("WebSocket: ws://127.0.0.1:8000/ws/live-interview")
     print("Health Check: http://127.0.0.1:8000/health")
+    print("Features: Full settings support + Resume integration")
     print("=" * 60)
     
     uvicorn.run(

@@ -9,8 +9,7 @@ import {
   Pause,
   Play,
   Volume2,
-  X,
-  Headphones
+  X
 } from "lucide-react";
 import { jsPDF } from "jspdf";
 
@@ -146,8 +145,7 @@ export default function InterviewAssist() {
           advancedQuestionDetection: true,
           messageDirection: "bottom",
           autoScroll: true,
-          programmingLanguage: "Python",
-          audio_source_preference: "system"
+          programmingLanguage: "Python"
         };
     } catch {
       return {
@@ -157,8 +155,7 @@ export default function InterviewAssist() {
         advancedQuestionDetection: true,
         messageDirection: "bottom",
         autoScroll: true,
-        programmingLanguage: "Python",
-        audio_source_preference: "system"
+        programmingLanguage: "Python"
       };
     }
   });
@@ -168,14 +165,14 @@ export default function InterviewAssist() {
   const [interviewerTranscript, setInterviewerTranscript] = useState([]);
   const [candidateTranscript, setCandidateTranscript] = useState([]);
   const [activeView, setActiveView] = useState("interviewer");
-  const [interviewerAudioEnabled, setInterviewerAudioEnabled] = useState(true);
+  const [interviewerAudioEnabled, setInterviewerAudioEnabled] = useState(false);
   const [candidateAudioEnabled, setCandidateAudioEnabled] = useState(false);
-  const [interviewerStatus, setInterviewerStatus] = useState("Connecting...");
+  const [interviewerStatus, setInterviewerStatus] = useState("Ready");
   const [candidateStatus, setCandidateStatus] = useState("Ready");
   const [showSettings, setShowSettings] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
-  const [audioSource, setAudioSource] = useState(settings.audio_source_preference || "system");
   const [screenShareWarning, setScreenShareWarning] = useState("");
+  const [showTabSelectionModal, setShowTabSelectionModal] = useState(false);
 
   // Current Q&A states with streaming support
   const [currentQuestion, setCurrentQuestion] = useState("");
@@ -194,11 +191,7 @@ export default function InterviewAssist() {
   const recognitionRef = useRef(null);
   const transcriptEndRef = useRef(null);
   const copilotEndRef = useRef(null);
-  const retryRef = useRef(0);
   const recordingIntervalRef = useRef(null);
-  const isConnectingRef = useRef(false);
-  const cleanupRef = useRef(false);
-  const maxRetries = 5;
 
   // Authentication check
   useEffect(() => {
@@ -230,8 +223,62 @@ export default function InterviewAssist() {
     }
   }, [qaList, currentAnswer, settings.autoScroll]);
 
+  // Handle tab audio selection
+  const handleInterviewerToggle = async () => {
+    if (interviewerAudioEnabled) {
+      // If already enabled, just disable it
+      setInterviewerAudioEnabled(false);
+    } else {
+      // If disabled, show tab selection instructions
+      setShowTabSelectionModal(true);
+    }
+  };
+
+  const handleTabSelection = async () => {
+    try {
+      // Request screen/tab sharing
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: true
+      });
+
+      // Check if user selected entire screen or window
+      const videoTrack = stream.getVideoTracks()[0];
+      const trackSettings = videoTrack.getSettings();
+      
+      // Stop the stream immediately as we don't need it (backend handles audio)
+      stream.getTracks().forEach(track => track.stop());
+
+      // Check if user selected entire screen
+      if (trackSettings.displaySurface === 'monitor') {
+        setScreenShareWarning("⚠️ You selected 'Entire Screen'. Please click the button again and select a specific Chrome Tab with 'Also share tab audio' enabled.");
+        setShowTabSelectionModal(false);
+        return;
+      }
+
+      // Check if user selected a window instead of a tab
+      if (trackSettings.displaySurface === 'window') {
+        setScreenShareWarning("⚠️ You selected 'Window'. Please click the button again and select a specific Chrome Tab with 'Also share tab audio' enabled.");
+        setShowTabSelectionModal(false);
+        return;
+      }
+
+      // If tab was selected properly, enable interviewer audio
+      setInterviewerAudioEnabled(true);
+      setShowTabSelectionModal(false);
+      setScreenShareWarning("");
+      
+    } catch (err) {
+      console.error("Tab selection error:", err);
+      if (err.name === 'NotAllowedError') {
+        setScreenShareWarning("⚠️ Tab audio sharing was cancelled. Please try again and select a Chrome Tab.");
+      }
+      setShowTabSelectionModal(false);
+    }
+  };
+
   // ============================================================================
-  // BACKEND WEBSOCKET - HANDLES ONLY INTERVIEWER AUDIO
+  // BACKEND WEBSOCKET - ENHANCED WITH COMPLETE PERSONA & SETTINGS DATA
   // ============================================================================
   useEffect(() => {
     let ws = null;
@@ -240,11 +287,10 @@ export default function InterviewAssist() {
     let isManualDisconnect = false;
     let reconnectAttempts = 0;
     const maxReconnectAttempts = 5;
-    const reconnectDelays = [1000, 2000, 3000, 5000, 10000]; // Progressive backoff
+    const reconnectDelays = [1000, 2000, 3000, 5000, 10000];
 
     const cleanup = () => {
       isManualDisconnect = true;
-
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
@@ -253,7 +299,6 @@ export default function InterviewAssist() {
         clearInterval(pingInterval);
         pingInterval = null;
       }
-
       if (ws) {
         try {
           ws.close(1000, "Client cleanup");
@@ -268,7 +313,6 @@ export default function InterviewAssist() {
       if (pingInterval) {
         clearInterval(pingInterval);
       }
-
       pingInterval = setInterval(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
           try {
@@ -333,19 +377,39 @@ export default function InterviewAssist() {
             persona_id: personaId || null,
             position: personaData?.position || "",
             company_name: personaData?.company_name || "",
+            company_description: personaData?.company_description || "",
+            job_description: personaData?.job_description || "",
+            resume_text: personaData?.resume_text || "",
+            resume_filename: personaData?.resume_filename || "",
             settings: {
-              audioLanguage: settings.audioLanguage || "en",
+              audioLanguage: settings.audioLanguage || "English",
               pauseInterval: settings.pauseInterval || 0.4,
               advancedQuestionDetection: settings.advancedQuestionDetection !== false,
               selectedResponseStyleId: settings.selectedResponseStyleId || "concise",
+              responseStyle: settings.responseStyle || "professional",
+              defaultModel: settings.default_model || "gpt-4o-mini",
+              codingModel: settings.coding_model || "gpt-4o-mini",
+              programmingLanguage: settings.programmingLanguage || "Python",
               interviewInstructions: settings.interviewInstructions || "",
-              programmingLanguage: settings.programmingLanguage || "Python"
+              codingInstructions: settings.codingInstructions || "",
+              messageDirection: settings.messageDirection || "bottom",
+              autoScroll: settings.autoScroll !== false,
+              enableCandidateVoice: settings.enable_candidate_voice || false,
+              candidateVoiceSettings: settings.candidate_voice_settings || {
+                pitch: 1.0,
+                speed: 1.0,
+                voice: "alloy",
+                provider: "openai"
+              }
             }
           };
 
           try {
             ws.send(JSON.stringify(initMessage));
-            console.log("✓ Initialization message sent");
+            console.log("✓ Initialization message sent with complete settings and persona data");
+            console.log("📋 Persona:", personaData?.position, "@", personaData?.company_name);
+            console.log("📄 Resume:", personaData?.resume_text ? "✓ Included" : "✗ Not available");
+            console.log("🎨 Style:", settings.selectedResponseStyleId || "concise");
             startPingInterval();
           } catch (e) {
             console.error("Error sending init message:", e);
@@ -360,8 +424,7 @@ export default function InterviewAssist() {
             switch (data.type) {
               case "ready":
               case "connected":
-                const sourceLabel = audioSource === "tab" ? "Tab Audio" : "System Audio";
-                setInterviewerStatus(`🎤 ${sourceLabel} Active`);
+                setInterviewerStatus("🎤 Tab Audio Active");
                 break;
 
               case "transcript":
@@ -485,11 +548,10 @@ export default function InterviewAssist() {
   }, [
     interviewerAudioEnabled,
     personaId,
+    personaData,
     domain,
     settings,
-    audioSource,
-    user,
-    personaData
+    user
   ]);
 
   // ============================================================================
@@ -795,28 +857,14 @@ export default function InterviewAssist() {
           </div>
 
           <div className="flex items-center gap-3">
-            <button
-              onClick={() => {
-                setAudioSource(audioSource === "tab" ? "system" : "tab");
-              }}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${audioSource === "tab"
-                  ? "bg-purple-600 text-white shadow-lg shadow-purple-500/30"
-                  : "bg-gray-800 text-gray-400 hover:bg-gray-700"
-                }`}
-              title={audioSource === "tab" ? "Using Tab Audio" : "Using System Audio"}
-            >
-              <Headphones className="w-4 h-4" />
-              {audioSource === "tab" ? "Tab Audio" : "System Audio"}
-            </button>
-
             <div className="flex items-center gap-2 bg-gray-800 rounded-lg p-1">
               <button
-                onClick={() => setInterviewerAudioEnabled(!interviewerAudioEnabled)}
+                onClick={handleInterviewerToggle}
                 className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${interviewerAudioEnabled
                     ? "bg-green-600 text-white shadow-lg shadow-green-500/30"
                     : "bg-gray-700 text-gray-400 hover:bg-gray-650"
                   }`}
-                title="Backend: Stereo Mix/Tab Audio"
+                title="Backend: Tab Audio - Click to select tab"
               >
                 Interviewer (Backend)
               </button>
@@ -1109,7 +1157,7 @@ export default function InterviewAssist() {
                 ? "bg-green-500 animate-pulse shadow-lg shadow-green-500/50"
                 : interviewerStatus.includes("Error") || interviewerStatus.includes("failed")
                   ? "bg-red-500 shadow-lg shadow-red-500/50"
-                  : interviewerStatus === "Disabled"
+                  : interviewerStatus === "Disabled" || interviewerStatus === "Ready"
                     ? "bg-gray-600"
                     : "bg-yellow-500 animate-pulse"
               }`}
@@ -1125,7 +1173,7 @@ export default function InterviewAssist() {
                 ? "bg-blue-500 animate-pulse shadow-lg shadow-blue-500/50"
                 : candidateStatus.includes("Denied") || candidateStatus.includes("Not Supported")
                   ? "bg-red-500 shadow-lg shadow-red-500/50"
-                  : candidateStatus === "Disabled"
+                  : candidateStatus === "Disabled" || candidateStatus === "Ready"
                     ? "bg-gray-600"
                     : "bg-yellow-500 animate-pulse"
               }`}
@@ -1206,7 +1254,7 @@ export default function InterviewAssist() {
                 <h4 className="text-sm font-medium mb-3 text-green-400">Active Audio Sources</h4>
                 <div className="space-y-2 text-sm text-gray-400">
                   <div className="flex items-center justify-between py-1">
-                    <span>Backend: Interviewer ({audioSource === "tab" ? "Tab" : "System"})</span>
+                    <span>Backend: Interviewer (Tab Audio)</span>
                     <span className={`font-medium ${interviewerAudioEnabled ? "text-green-400" : "text-gray-500"}`}>
                       {interviewerAudioEnabled ? "✓ Enabled" : "✗ Disabled"}
                     </span>
@@ -1226,10 +1274,11 @@ export default function InterviewAssist() {
                   Architecture Notes
                 </h4>
                 <ul className="text-gray-400 text-sm space-y-2 list-disc list-inside">
-                  <li><strong className="text-blue-400">Backend (Python):</strong> Handles interviewer audio via Stereo Mix/Tab capture + Whisper transcription</li>
+                  <li><strong className="text-blue-400">Backend (Python):</strong> Handles interviewer audio via Tab capture + Whisper transcription</li>
                   <li><strong className="text-green-400">Frontend (React):</strong> Handles candidate audio via browser's Web Speech API</li>
                   <li><strong className="text-purple-400">Parallel Processing:</strong> Both audio sources work independently and simultaneously</li>
-                  <li>Tab audio requires selecting a specific browser tab/window (not entire screen)</li>
+                  <li>Click Interviewer (Backend) button to select a Chrome tab with audio</li>
+                  <li>Important: Select a specific tab, not entire screen, and enable "Also share tab audio"</li>
                   <li>To modify settings, return to Copilot Launchpad before starting</li>
                 </ul>
               </div>
@@ -1239,6 +1288,76 @@ export default function InterviewAssist() {
                 className="w-full bg-purple-600 hover:bg-purple-700 text-white py-2.5 rounded-lg font-medium transition-colors shadow-lg shadow-purple-500/20"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tab Selection Modal */}
+      {showTabSelectionModal && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 backdrop-blur-sm">
+          <div className="bg-gray-900 rounded-xl p-6 w-full max-w-2xl border border-gray-800 shadow-2xl">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-xl font-semibold text-white">Select Tab for Interview Audio</h3>
+              <button
+                onClick={() => setShowTabSelectionModal(false)}
+                className="text-gray-400 hover:text-gray-200 transition-colors"
+                title="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-4 mb-6">
+              <div className="bg-blue-900/30 border border-blue-800/50 rounded-lg p-4">
+                <h4 className="text-sm font-medium mb-3 text-blue-300 flex items-center gap-2">
+                  <span>📋</span>
+                  Instructions
+                </h4>
+                <ol className="text-gray-300 text-sm space-y-2 list-decimal list-inside">
+                  <li>Click the "Select Tab" button below</li>
+                  <li>In the popup, select the <strong className="text-blue-400">"Chrome Tab"</strong> option</li>
+                  <li>Choose the tab where your interview is happening</li>
+                  <li><strong className="text-green-400">IMPORTANT:</strong> Enable the <strong>"Also share tab audio"</strong> checkbox</li>
+                  <li>Click "Share" to confirm</li>
+                </ol>
+              </div>
+
+              <div className="bg-yellow-900/30 border border-yellow-800/50 rounded-lg p-4">
+                <h4 className="text-sm font-medium mb-2 text-yellow-300 flex items-center gap-2">
+                  <span>⚠️</span>
+                  Important Notes
+                </h4>
+                <ul className="text-gray-300 text-sm space-y-1 list-disc list-inside">
+                  <li><strong>Do NOT select</strong> "Entire Screen" or "Window"</li>
+                  <li>Only select a specific <strong>Chrome Tab</strong></li>
+                  <li>Make sure "Also share tab audio" is checked</li>
+                  <li>The interview must be playing in a browser tab</li>
+                </ul>
+              </div>
+
+              <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <h4 className="text-sm font-medium mb-2 text-purple-300">What happens next?</h4>
+                <p className="text-gray-400 text-sm">
+                  Once you select a tab with audio sharing enabled, the backend will automatically start capturing
+                  the interviewer's audio, transcribe it using Whisper, and generate AI-powered answers in real-time.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowTabSelectionModal(false)}
+                className="flex-1 bg-gray-700 hover:bg-gray-600 text-white py-3 rounded-lg font-medium transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleTabSelection}
+                className="flex-1 bg-green-600 hover:bg-green-700 text-white py-3 rounded-lg font-medium transition-colors shadow-lg shadow-green-500/20"
+              >
+                Select Tab
               </button>
             </div>
           </div>
