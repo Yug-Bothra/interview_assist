@@ -12,11 +12,13 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import openai
+import google.generativeai as genai
 from audio_utils import ContinuousAudioRecorder
 
 # Load environment variables
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 app = FastAPI(title="Interview Assistant API")
 
@@ -201,6 +203,53 @@ async def transcribe_audio(audio_buffer, settings: Dict[str, Any]) -> str:
             print(f"❌ Transcription error: {e}")
             return ""
 
+async def call_gemini_api(system_prompt: str, user_message: str, model_name: str = "gemini-2.0-flash-exp") -> str:
+    """
+    Call Google Gemini API for answer generation
+    """
+    try:
+        # Initialize Gemini model
+        model = genai.GenerativeModel(model_name)
+        
+        # Combine system prompt and user message for Gemini
+        full_prompt = f"{system_prompt}\n\n{user_message}"
+        
+        # Generate response
+        response = await asyncio.to_thread(
+            lambda: model.generate_content(
+                full_prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.5,
+                    max_output_tokens=400,
+                )
+            )
+        )
+        
+        return response.text.strip()
+        
+    except Exception as e:
+        print(f"❌ Gemini API error: {e}")
+        raise
+
+async def call_openai_api(system_prompt: str, user_message: str, model: str) -> str:
+    """
+    Call OpenAI API for answer generation
+    """
+    response = await asyncio.to_thread(
+        lambda: openai.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.5,
+            max_tokens=400,
+            timeout=20
+        )
+    )
+    
+    return response.choices[0].message.content.strip()
+
 async def process_transcript_with_ai(
     transcript: str,
     settings: Dict[str, Any],
@@ -208,8 +257,8 @@ async def process_transcript_with_ai(
     custom_style_prompt: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Send transcript to OpenAI to intelligently extract question and generate answer.
-    NOW INCLUDES: Resume text, custom response styles, all settings
+    Send transcript to AI (OpenAI or Gemini) to intelligently extract question and generate answer.
+    NOW INCLUDES: Resume text, custom response styles, all settings, Gemini support
     Returns: {"has_question": bool, "question": str, "answer": str}
     """
     try:
@@ -257,21 +306,15 @@ CANDIDATE CONTEXT:
         
         # Select model based on settings
         model = settings.get("defaultModel", DEFAULT_MODEL)
+        user_message = f"Transcript: {transcript}"
         
-        response = await asyncio.to_thread(
-            lambda: openai.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Transcript: {transcript}"}
-                ],
-                temperature=0.5,
-                max_tokens=400,
-                timeout=20
-            )
-        )
-        
-        answer = response.choices[0].message.content.strip()
+        # Determine which API to use based on model name
+        if "gemini" in model.lower():
+            print(f"🤖 Using Gemini API: {model}")
+            answer = await call_gemini_api(system_prompt, user_message, model)
+        else:
+            print(f"🤖 Using OpenAI API: {model}")
+            answer = await call_openai_api(system_prompt, user_message, model)
         
         if answer.upper() == "SKIP" or "SKIP" in answer.upper():
             return {"has_question": False, "question": None, "answer": None}
@@ -303,13 +346,16 @@ async def health_check():
 @app.get("/api/models/status")
 async def get_model_status():
     """Get current model configuration"""
+    # Check if Gemini API key is configured
+    gemini_available = bool(os.getenv("GEMINI_API_KEY"))
+    
     return {
         "default_provider": DEFAULT_MODEL,
         "coding_provider": DEFAULT_MODEL,
         "available_providers": {
             "gpt-4o-mini": True, 
             "gpt-4o": True,
-            "gemini-2.0-flash": False  # Not implemented yet
+            "gemini-2.0-flash-exp": gemini_available
         }
     }
 
@@ -332,6 +378,7 @@ async def websocket_live_interview(websocket: WebSocket):
     """
     WebSocket endpoint for real-time interview assistance.
     ENHANCED: Now receives and uses ALL settings and complete persona data including resume_text
+    SUPPORTS: OpenAI GPT models and Google Gemini models
     """
     await websocket.accept()
     print("✅ WebSocket connection accepted")
@@ -425,6 +472,10 @@ async def websocket_live_interview(websocket: WebSocket):
                             # Store custom response style if provided
                             custom_style_prompt = data.get("custom_style_prompt", None)
                             
+                            # Determine AI provider
+                            selected_model = settings.get('defaultModel', DEFAULT_MODEL)
+                            ai_provider = "Google Gemini" if "gemini" in selected_model.lower() else "OpenAI"
+                            
                             print("=" * 60)
                             print("🎯 SESSION INITIALIZED")
                             print("=" * 60)
@@ -435,7 +486,8 @@ async def websocket_live_interview(websocket: WebSocket):
                             print(f"🗣️  Language: {settings.get('audioLanguage', 'English')}")
                             print(f"⏸️  Pause Interval: {settings.get('pauseInterval', 2)}s")
                             print(f"💻 Programming Language: {settings.get('programmingLanguage', 'Python')}")
-                            print(f"🤖 AI Model: {settings.get('defaultModel', DEFAULT_MODEL)}")
+                            print(f"🤖 AI Provider: {ai_provider}")
+                            print(f"🔧 AI Model: {selected_model}")
                             print(f"🔍 Advanced Detection: {settings.get('advancedQuestionDetection', False)}")
                             print("=" * 60)
                             
@@ -455,7 +507,7 @@ async def websocket_live_interview(websocket: WebSocket):
                             
                             await safe_send({
                                 "type": "connected",
-                                "message": "Session initialized with complete settings and persona data"
+                                "message": f"Session initialized with {ai_provider} ({selected_model})"
                             })
                         
                         elif data.get("type") == "ping":
@@ -631,13 +683,19 @@ async def websocket_live_interview(websocket: WebSocket):
 if __name__ == "__main__":
     import uvicorn
     
+    # Check API keys
+    openai_available = bool(os.getenv("OPENAI_API_KEY"))
+    gemini_available = bool(os.getenv("GEMINI_API_KEY"))
+    
     print("=" * 60)
     print("🚀 Interview Assistant Backend Starting...")
     print("=" * 60)
-    print(f"Model: {DEFAULT_MODEL}")
+    print(f"OpenAI API: {'✓ Available' if openai_available else '✗ Not configured'}")
+    print(f"Gemini API: {'✓ Available' if gemini_available else '✗ Not configured'}")
+    print(f"Default Model: {DEFAULT_MODEL}")
     print("WebSocket: ws://127.0.0.1:8000/ws/live-interview")
     print("Health Check: http://127.0.0.1:8000/health")
-    print("Features: Full settings support + Resume integration")
+    print("Features: Full settings support + Resume integration + Multi-AI support")
     print("=" * 60)
     
     uvicorn.run(
