@@ -1,18 +1,18 @@
 """
-Unified Interview Assistant Backend
-LEFT PANEL: Deepgram dual-stream (Interviewer + Candidate transcripts display)
-RIGHT PANEL: Original Whisper + OpenAI Q&A (100% unchanged)
+Render-Compatible Interview Assistant Backend
+Audio capture: 100% browser-based (no server audio devices needed)
+LEFT PANEL: Deepgram dual-stream transcription display
+RIGHT PANEL: Q&A with Deepgram transcripts (no Whisper, no audio_utils.py)
 """
 
 import asyncio
 import json
 import os
 import time
-import re
 from typing import Optional, Dict, Any
 from collections import deque
-from io import BytesIO
 from enum import Enum
+from difflib import SequenceMatcher
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,8 +20,6 @@ from dotenv import load_dotenv
 import openai
 import websockets
 from websockets.exceptions import ConnectionClosed
-
-from audio_utils import ContinuousAudioRecorder
 
 # Load environment variables
 load_dotenv()
@@ -31,7 +29,7 @@ DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 if not DEEPGRAM_API_KEY:
     raise ValueError("❌ DEEPGRAM_API_KEY not found")
 
-app = FastAPI(title="Unified Interview Assistant API")
+app = FastAPI(title="Interview Assistant API - Render Compatible")
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,11 +40,10 @@ app.add_middleware(
 )
 
 # ============================================================================
-# SHARED CONFIGURATION
+# CONFIGURATION
 # ============================================================================
 
 DEFAULT_MODEL = "gpt-4o-mini"
-WHISPER_PROMPT = "This is a conversation recording that may contain interview questions, casual talk, or technical discussions."
 KEEPALIVE_INTERVAL = 5
 
 class ConnectionState(Enum):
@@ -56,7 +53,7 @@ class ConnectionState(Enum):
     DISCONNECTING = "disconnecting"
 
 # ============================================================================
-# LEFT PANEL: DEEPGRAM CONFIGURATION
+# DEEPGRAM CONFIGURATION
 # ============================================================================
 
 def get_deepgram_url(language="en"):
@@ -192,7 +189,7 @@ class DualStreamManager:
             )
             
             self.is_active = True
-            print("✅ Deepgram streams ready (LEFT PANEL)")
+            print("✅ Deepgram streams ready")
         except Exception as e:
             print(f"❌ Deepgram failed: {e}")
             await self.close_all()
@@ -207,7 +204,76 @@ class DualStreamManager:
         )
 
 # ============================================================================
-# RIGHT PANEL: WHISPER + OPENAI Q&A (ORIGINAL CODE - UNCHANGED)
+# TRANSCRIPT ACCUMULATOR FOR Q&A
+# ============================================================================
+
+class TranscriptAccumulator:
+    """Accumulates Deepgram transcripts and detects complete questions"""
+    
+    def __init__(self, pause_threshold: float = 2.0):
+        self.pause_threshold = pause_threshold
+        self.current_paragraph = ""
+        self.last_speech_time = 0
+        self.is_speaking = False
+        self.complete_paragraphs = deque(maxlen=50)
+        self.min_question_length = 10
+        
+    def add_transcript(self, transcript: str, is_final: bool, speech_final: bool) -> Optional[str]:
+        """Add transcript chunk and return complete paragraph if pause detected"""
+        current_time = time.time()
+        
+        if not transcript or not transcript.strip():
+            return None
+        
+        if is_final or speech_final:
+            if self.current_paragraph:
+                self.current_paragraph += " " + transcript.strip()
+            else:
+                self.current_paragraph = transcript.strip()
+            
+            self.last_speech_time = current_time
+            self.is_speaking = True
+        
+        if self.is_speaking and self.current_paragraph:
+            time_since_last_speech = current_time - self.last_speech_time
+            
+            if time_since_last_speech >= self.pause_threshold:
+                complete_text = self.current_paragraph.strip()
+                
+                if len(complete_text) >= self.min_question_length:
+                    if not self._is_duplicate(complete_text):
+                        self.complete_paragraphs.append(complete_text.lower())
+                        self.current_paragraph = ""
+                        self.is_speaking = False
+                        return complete_text
+                
+                self.current_paragraph = ""
+                self.is_speaking = False
+        
+        return None
+    
+    def _is_duplicate(self, text: str, threshold: float = 0.85) -> bool:
+        """Check if text is too similar to recent paragraphs"""
+        text_lower = text.lower().strip()
+        
+        for prev in self.complete_paragraphs:
+            similarity = SequenceMatcher(None, text_lower, prev).ratio()
+            if similarity > threshold:
+                return True
+        
+        return False
+    
+    def force_complete(self) -> Optional[str]:
+        """Force completion of current paragraph"""
+        if self.current_paragraph and len(self.current_paragraph) >= self.min_question_length:
+            complete_text = self.current_paragraph.strip()
+            self.current_paragraph = ""
+            self.is_speaking = False
+            return complete_text
+        return None
+
+# ============================================================================
+# Q&A PROCESSING
 # ============================================================================
 
 RESPONSE_STYLES = {
@@ -255,74 +321,20 @@ Your task:
 4. If it's just casual conversation, greetings (like "hi", "hello"), or incomplete thoughts, respond with exactly: "SKIP"
 
 Guidelines for extracting questions:
-- Remove conversational preamble ONLY: "Absolutely", "I'd be happy to help", "Let's get started", "Here's a question for you", "Okay, so"
-- DO NOT rephrase the question - extract it EXACTLY as the interviewer asked it
-- Keep the question wording completely unchanged, including "Can you", "Could you", "Tell me", etc.
-- Extract from the first question word (Can, Could, What, How, Why, etc.) to the question mark
-- If multiple questions exist, extract only the most complete/recent one
+- Remove conversational preamble ONLY
+- DO NOT rephrase the question - extract it EXACTLY as asked
+- Keep the question wording completely unchanged
+- Extract from the first question word to the question mark
 - Preserve ALL technical terms, context, and original phrasing
 
 Response format:
 - If question detected: 
-  QUESTION: [exact question with original wording, preamble removed]
+  QUESTION: [exact question with original wording]
   ANSWER: [your detailed answer]
-- If no question (only greetings/fragments): SKIP
+- If no question: SKIP
 
-CRITICAL: Do NOT rephrase or rewrite the question. Extract it EXACTLY as spoken, removing only the conversational preamble.
+CRITICAL: Do NOT rephrase or rewrite the question. Extract it EXACTLY as spoken.
 """
-
-def clean_transcript(text: str) -> str:
-    text = re.sub(r'\b(uh+|um+|ah+|like|so)\b', '', text, flags=re.I)
-    return re.sub(r'\s+', ' ', text).strip()
-
-def has_sufficient_speech(transcript: str) -> bool:
-    if not transcript or len(transcript.strip()) < 5:
-        return False
-    noise_indicators = ['[silence]', '[noise]', '[inaudible]', '...', '..']
-    if any(indicator in transcript.lower() for indicator in noise_indicators):
-        return False
-    return len(transcript.split()) >= 3
-
-def is_similar_to_previous(new_text: str, prev_transcripts: deque, threshold: float = 0.9) -> bool:
-    from difflib import SequenceMatcher
-    new_lower = new_text.lower()
-    for prev in prev_transcripts:
-        if SequenceMatcher(None, new_lower, prev.lower()).ratio() > threshold:
-            return True
-    return False
-
-async def transcribe_audio(audio_buffer, settings: Dict[str, Any]) -> str:
-    language_map = {
-        "English": "en", "Spanish": "es", "French": "fr",
-        "German": "de", "Hindi": "hi", "Mandarin": "zh"
-    }
-    language_code = language_map.get(settings.get("audioLanguage", "English"), "en")
-    
-    max_retries = 2
-    for attempt in range(max_retries):
-        try:
-            response = await asyncio.to_thread(
-                lambda: openai.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=audio_buffer,
-                    language=language_code,
-                    prompt=WHISPER_PROMPT,
-                    temperature=0.0
-                )
-            )
-            transcript = clean_transcript(response.text.strip())
-            if has_sufficient_speech(transcript):
-                return transcript
-            return ""
-        except openai.RateLimitError:
-            if attempt < max_retries - 1:
-                await asyncio.sleep(1)
-                audio_buffer.seek(0)
-                continue
-            return ""
-        except Exception as e:
-            print(f"❌ Whisper error: {e}")
-            return ""
 
 async def process_transcript_with_ai(
     transcript: str,
@@ -403,14 +415,14 @@ CANDIDATE CONTEXT:
         return {"has_question": False, "question": None, "answer": None}
 
 # ============================================================================
-# WEBSOCKET: LEFT PANEL - DEEPGRAM DUAL-STREAM (DISPLAY ONLY)
+# WEBSOCKET: DEEPGRAM DUAL-STREAM (LEFT PANEL)
 # ============================================================================
 
 @app.websocket("/ws/dual-transcribe")
 async def websocket_dual_transcribe(websocket: WebSocket):
-    """LEFT PANEL: Deepgram display for Interviewer + Candidate"""
+    """Deepgram display for Interviewer + Candidate"""
     await websocket.accept()
-    print("\n🎙️  LEFT PANEL: Deepgram connected")
+    print("\n🎙️ Deepgram connected")
     
     language = websocket.query_params.get("language", "en")
     stream_manager = DualStreamManager(DEEPGRAM_API_KEY, language)
@@ -449,7 +461,7 @@ async def websocket_dual_transcribe(websocket: WebSocket):
                     except asyncio.TimeoutError:
                         continue
             except Exception as e:
-                print(f"❌ Deepgram audio error: {e}")
+                print(f"❌ Audio error: {e}")
         
         async def handle_transcripts():
             async def process_stream(stream: DeepgramStream):
@@ -477,10 +489,6 @@ async def websocket_dual_transcribe(websocket: WebSocket):
                                         "speech_final": transcript_data.get("speech_final", False)
                                     }
                                     await websocket.send_json(response)
-                                    
-                                    emoji = "🎤" if stream.stream_type == StreamType.CANDIDATE else "💻"
-                                    final = " [FINAL]" if transcript_data.get("speech_final") else ""
-                                    print(f"{emoji} {transcript}{final}")
                 except Exception as e:
                     print(f"❌ Stream error: {e}")
             
@@ -502,24 +510,24 @@ async def websocket_dual_transcribe(websocket: WebSocket):
             task.cancel()
     
     except Exception as e:
-        print(f"❌ Deepgram WebSocket error: {e}")
+        print(f"❌ Deepgram error: {e}")
     finally:
         await stream_manager.close_all()
         try:
             await websocket.close()
         except:
             pass
-        print("🔌 LEFT PANEL: Deepgram closed\n")
+        print("🔌 Deepgram closed\n")
 
 # ============================================================================
-# WEBSOCKET: RIGHT PANEL - WHISPER + OPENAI Q&A (ORIGINAL - 100% UNCHANGED)
+# WEBSOCKET: Q&A WITH DEEPGRAM TRANSCRIPTS (RIGHT PANEL)
 # ============================================================================
 
 @app.websocket("/ws/live-interview")
 async def websocket_live_interview(websocket: WebSocket):
-    """RIGHT PANEL: Original Whisper + OpenAI Q&A (100% unchanged)"""
+    """Q&A Copilot - processes Deepgram transcripts from frontend"""
     await websocket.accept()
-    print("\n🤖 RIGHT PANEL: Q&A Copilot connected")
+    print("\n🤖 Q&A Copilot connected")
     
     connection_state = ConnectionState.CONNECTED
     state_lock = asyncio.Lock()
@@ -533,13 +541,14 @@ async def websocket_live_interview(websocket: WebSocket):
         async with state_lock:
             connection_state = new_state
     
-    prev_transcripts = deque(maxlen=10)
+    transcript_accumulator = None
+    prev_questions = deque(maxlen=10)
     processing_lock = asyncio.Lock()
     send_lock = asyncio.Lock()
     
     settings = {
         "audioLanguage": "English",
-        "pauseInterval": 2,
+        "pauseInterval": 2.0,
         "advancedQuestionDetection": False,
         "selectedResponseStyleId": "concise",
         "programmingLanguage": "Python",
@@ -551,7 +560,6 @@ async def websocket_live_interview(websocket: WebSocket):
     
     persona_data = None
     custom_style_prompt = None
-    recorder = None
     
     async def safe_send(data: dict) -> bool:
         state = await get_state()
@@ -566,198 +574,151 @@ async def websocket_live_interview(websocket: WebSocket):
             return False
     
     try:
-        async def handle_messages():
-            nonlocal settings, persona_data, custom_style_prompt, recorder
-            
-            try:
-                while await get_state() == ConnectionState.CONNECTED:
-                    try:
-                        message = await asyncio.wait_for(websocket.receive_text(), timeout=2.0)
-                        data = json.loads(message)
-                        
-                        if data.get("type") == "init":
-                            received_settings = data.get("settings", {})
-                            settings.update(received_settings)
-                            
-                            persona_data = {
-                                "position": data.get("position", ""),
-                                "company_name": data.get("company_name", ""),
-                                "company_description": data.get("company_description", ""),
-                                "job_description": data.get("job_description", ""),
-                                "resume_text": data.get("resume_text", ""),
-                                "resume_filename": data.get("resume_filename", "")
-                            }
-                            
-                            custom_style_prompt = data.get("custom_style_prompt", None)
-                            
-                            print("=" * 60)
-                            print("🎯 RIGHT PANEL Q&A INITIALIZED")
-                            print("=" * 60)
-                            print(f"📋 Position: {persona_data['position']}")
-                            print(f"🏢 Company: {persona_data['company_name']}")
-                            print(f"📄 Resume: {'✓' if persona_data.get('resume_text') else '✗'}")
-                            print(f"🎨 Style: {settings.get('selectedResponseStyleId', 'concise')}")
-                            print(f"🤖 Model: {settings.get('defaultModel', DEFAULT_MODEL)}")
-                            print("=" * 60)
-                            
-                            if not recorder:
-                                try:
-                                    recorder = ContinuousAudioRecorder(silence_threshold=0.3, fs=16000)
-                                    recorder.start()
-                                    print("✓ Audio recorder started (RIGHT PANEL)")
-                                except RuntimeError as e:
-                                    await safe_send({
-                                        "type": "error",
-                                        "message": "Audio device not found. Enable Stereo Mix."
-                                    })
-                                    await set_state(ConnectionState.DISCONNECTING)
-                                    return
-                            
-                            await safe_send({"type": "connected", "message": "Q&A initialized"})
-                        
-                        elif data.get("type") == "ping":
-                            await safe_send({"type": "pong"})
-                    except asyncio.TimeoutError:
-                        if await get_state() != ConnectionState.CONNECTED:
-                            break
-                        continue
-            except WebSocketDisconnect:
-                await set_state(ConnectionState.DISCONNECTING)
-            except Exception as e:
-                print(f"❌ Message handler error: {e}")
-                await set_state(ConnectionState.DISCONNECTING)
-        
-        async def process_audio():
-            consecutive_empty = 0
-            max_empty = 15
-            
-            while not recorder and await get_state() == ConnectionState.CONNECTED:
-                await asyncio.sleep(0.5)
-            
-            if not recorder:
-                return
-            
-            while await get_state() == ConnectionState.CONNECTED:
-                try:
-                    if await get_state() != ConnectionState.CONNECTED:
-                        break
-                    
-                    async with processing_lock:
-                        audio_buffer = recorder.get_audio_chunk()
-                        
-                        if audio_buffer is None:
-                            consecutive_empty += 1
-                            if consecutive_empty >= max_empty:
-                                consecutive_empty = 0
-                            await asyncio.sleep(0.2)
-                            continue
-                        
-                        consecutive_empty = 0
-                        chunk_type = getattr(audio_buffer, 'name', 'unknown')
-                        
-                        if chunk_type == "continuous_chunk.wav":
-                            audio_buffer.close()
-                            continue
-                        
-                        print(f"🎤 Processing for Q&A...")
-                        start_time = time.time()
-                        
-                        try:
-                            transcript = await transcribe_audio(audio_buffer, settings)
-                        finally:
-                            audio_buffer.close()
-
-                        if not transcript:
-                            continue
-
-                        print(f"⏱️  Transcription: {time.time() - start_time:.2f}s")
-                        print(f"📝 Transcript: {transcript}")
-
-                        if is_similar_to_previous(transcript, prev_transcripts):
-                            print("⏭️  Duplicate")
-                            continue
-
-                        prev_transcripts.append(transcript)
-
-                        ai_start = time.time()
-                        result = await process_transcript_with_ai(
-                            transcript, 
-                            settings, 
-                            persona_data,
-                            custom_style_prompt
-                        )
-                        print(f"⏱️  AI: {time.time() - ai_start:.2f}s")
-
-                        if await get_state() != ConnectionState.CONNECTED:
-                            break
-
-                        if result["has_question"]:
-                            print(f"❓ Question: {result['question']}")
-                            print(f"💬 Answer: {result['answer'][:100]}...")
-                            
-                            if not await safe_send({
-                                "type": "question_detected",
-                                "question": result["question"]
-                            }):
-                                break
-                            
-                            await asyncio.sleep(0.1)
-                            
-                            if not await safe_send({
-                                "type": "answer_ready",
-                                "question": result["question"],
-                                "answer": result["answer"]
-                            }):
-                                break
-                        else:
-                            print("⏭️  No question")
-                except WebSocketDisconnect:
-                    await set_state(ConnectionState.DISCONNECTING)
-                    break
-                except Exception as e:
-                    if await get_state() == ConnectionState.CONNECTED:
-                        print(f"❌ Audio error: {e}")
-                    break
-        
         await safe_send({"type": "ready", "message": "Q&A ready"})
         
-        message_task = asyncio.create_task(handle_messages())
-        audio_task = asyncio.create_task(process_audio())
-        
-        done, pending = await asyncio.wait(
-            [message_task, audio_task],
-            return_when=asyncio.FIRST_COMPLETED
-        )
-        
-        await set_state(ConnectionState.DISCONNECTING)
-        
-        for task in pending:
-            task.cancel()
+        while await get_state() == ConnectionState.CONNECTED:
             try:
-                await asyncio.wait_for(task, timeout=2.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
+                message = await asyncio.wait_for(websocket.receive_text(), timeout=2.0)
+                data = json.loads(message)
+                
+                if data.get("type") == "init":
+                    received_settings = data.get("settings", {})
+                    settings.update(received_settings)
+                    
+                    transcript_accumulator = TranscriptAccumulator(
+                        pause_threshold=settings.get("pauseInterval", 2.0)
+                    )
+                    
+                    persona_data = {
+                        "position": data.get("position", ""),
+                        "company_name": data.get("company_name", ""),
+                        "company_description": data.get("company_description", ""),
+                        "job_description": data.get("job_description", ""),
+                        "resume_text": data.get("resume_text", ""),
+                        "resume_filename": data.get("resume_filename", "")
+                    }
+                    
+                    custom_style_prompt = data.get("custom_style_prompt", None)
+                    
+                    print("=" * 60)
+                    print("🎯 Q&A INITIALIZED")
+                    print("=" * 60)
+                    print(f"⏱️  Pause threshold: {transcript_accumulator.pause_threshold}s")
+                    print(f"📋 Position: {persona_data['position']}")
+                    print(f"🤖 Model: {settings.get('defaultModel', DEFAULT_MODEL)}")
+                    print("=" * 60)
+                    
+                    await safe_send({"type": "connected", "message": "Q&A initialized"})
+                
+                elif data.get("type") == "transcript":
+                    if not transcript_accumulator:
+                        continue
+                    
+                    transcript = data.get("transcript", "")
+                    is_final = data.get("is_final", False)
+                    speech_final = data.get("speech_final", False)
+                    
+                    complete_paragraph = transcript_accumulator.add_transcript(
+                        transcript, 
+                        is_final, 
+                        speech_final
+                    )
+                    
+                    if complete_paragraph:
+                        if processing_lock.locked():
+                            print("⏭️  Skipping - already processing")
+                            continue
+                        
+                        async with processing_lock:
+                            print(f"\n📝 Complete paragraph detected:")
+                            print(f"   {complete_paragraph[:100]}...")
+                            
+                            if any(complete_paragraph.lower() == prev.lower() for prev in prev_questions):
+                                print("⏭️  Duplicate question skipped")
+                                continue
+                            
+                            print("🤖 Processing with AI...")
+                            result = await process_transcript_with_ai(
+                                complete_paragraph, 
+                                settings, 
+                                persona_data,
+                                custom_style_prompt
+                            )
+                            
+                            if result["has_question"]:
+                                prev_questions.append(complete_paragraph)
+                                
+                                print(f"❓ Question: {result['question']}")
+                                print(f"💬 Answer: {result['answer'][:100]}...")
+                                
+                                await safe_send({
+                                    "type": "question_detected",
+                                    "question": result["question"]
+                                })
+                                
+                                await asyncio.sleep(0.1)
+                                
+                                await safe_send({
+                                    "type": "answer_ready",
+                                    "question": result["question"],
+                                    "answer": result["answer"]
+                                })
+                            else:
+                                print("⏭️  No question detected")
+                
+                elif data.get("type") == "ping":
+                    await safe_send({"type": "pong"})
+                    
+            except asyncio.TimeoutError:
+                if transcript_accumulator and transcript_accumulator.current_paragraph:
+                    current_time = time.time()
+                    time_since_last = current_time - transcript_accumulator.last_speech_time
+                    
+                    if time_since_last >= transcript_accumulator.pause_threshold:
+                        complete_paragraph = transcript_accumulator.force_complete()
+                        
+                        if complete_paragraph and not processing_lock.locked():
+                            async with processing_lock:
+                                print(f"\n⏰ Force completing paragraph (timeout)")
+                                
+                                if not any(complete_paragraph.lower() == prev.lower() for prev in prev_questions):
+                                    result = await process_transcript_with_ai(
+                                        complete_paragraph, 
+                                        settings, 
+                                        persona_data,
+                                        custom_style_prompt
+                                    )
+                                    
+                                    if result["has_question"]:
+                                        prev_questions.append(complete_paragraph)
+                                        
+                                        await safe_send({
+                                            "type": "question_detected",
+                                            "question": result["question"]
+                                        })
+                                        
+                                        await asyncio.sleep(0.1)
+                                        
+                                        await safe_send({
+                                            "type": "answer_ready",
+                                            "question": result["question"],
+                                            "answer": result["answer"]
+                                        })
+                continue
 
     except WebSocketDisconnect:
-        print("❌ Q&A client disconnected")
+        print("❌ Q&A disconnected")
     except Exception as e:
         print(f"❌ Q&A error: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         await set_state(ConnectionState.DISCONNECTED)
-        
-        if recorder:
-            try:
-                recorder.stop()
-                print("✓ Audio recorder stopped (RIGHT PANEL)")
-            except Exception as e:
-                print(f"⚠️  Recorder stop error: {e}")
-        
         try:
             await websocket.close()
-        except Exception:
+        except:
             pass
-            
-        print("🔌 RIGHT PANEL: Q&A closed\n")
+        print("🔌 Q&A closed\n")
 
 # ============================================================================
 # API ENDPOINTS
@@ -767,9 +728,9 @@ async def websocket_live_interview(websocket: WebSocket):
 async def health_check():
     return {
         "status": "ok",
-        "message": "Unified Interview Assistant API",
-        "left_panel": "Deepgram dual-stream display",
-        "right_panel": "Whisper + OpenAI Q&A"
+        "message": "Interview Assistant API - Render Compatible",
+        "audio_capture": "browser-based",
+        "server_audio": "not required"
     }
 
 @app.get("/api/models/status")
@@ -779,14 +740,6 @@ async def get_model_status():
         "available_providers": {"gpt-4o-mini": True, "gpt-4o": True}
     }
 
-@app.post("/api/models/set-default")
-async def set_default_model(data: dict):
-    return {"success": True, "provider": data.get("provider", DEFAULT_MODEL)}
-
-@app.post("/api/models/set-coding")
-async def set_coding_model(data: dict):
-    return {"success": True, "provider": data.get("provider", DEFAULT_MODEL)}
-
 # ============================================================================
 # STARTUP
 # ============================================================================
@@ -795,36 +748,17 @@ if __name__ == "__main__":
     import uvicorn
     
     print("\n" + "=" * 70)
-    print("🚀 UNIFIED INTERVIEW ASSISTANT BACKEND")
+    print("🚀 INTERVIEW ASSISTANT BACKEND (RENDER COMPATIBLE)")
     print("=" * 70)
-    print()
-    print("LEFT PANEL (Deepgram Display):")
-    print("  📡 WebSocket: ws://localhost:8000/ws/dual-transcribe")
-    print("  🎤 Shows: Candidate (Microphone)")
-    print("  💻 Shows: Interviewer (System Audio)")
-    print("  ✓ Real-time transcription display only")
-    print()
-    print("RIGHT PANEL (Original Whisper + OpenAI Q&A):")
-    print("  📡 WebSocket: ws://localhost:8000/ws/live-interview")
-    print("  🎙️  Captures: System audio via audio_utils.py")
-    print("  🤖 Processes: Whisper transcription → OpenAI Q&A")
-    print("  ✓ Question detection + Answer generation")
-    print("  ✓ Resume-aware responses")
-    print()
-    print("🔑 APIs:")
-    print(f"  Deepgram: {'✅ Ready' if DEEPGRAM_API_KEY else '❌ Missing'}")
-    print(f"  OpenAI: {'✅ Ready' if openai.api_key else '❌ Missing'}")
-    print()
-    print("📊 Endpoints:")
-    print("  Health: http://localhost:8000/health")
-    print("  Docs: http://localhost:8000/docs")
-    print("=" * 70)
-    print("✨ LEFT shows transcripts | RIGHT processes Q&A")
+    print("✅ Audio capture: Browser-based (100%)")
+    print("✅ No server audio devices required")
+    print("✅ Deepgram: Real-time transcription")
+    print("✅ OpenAI: Q&A generation")
     print("=" * 70 + "\n")
     
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=8000,
+        port=int(os.getenv("PORT", 8000)),
         log_level="info"
     )

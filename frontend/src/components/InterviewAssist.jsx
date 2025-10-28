@@ -16,7 +16,7 @@ import {
 import { jsPDF } from "jspdf";
 
 // ============================================================================
-// STREAMING COMPONENTS (unchanged)
+// STREAMING COMPONENTS
 // ============================================================================
 
 function StreamingText({ text, isComplete, className = "" }) {
@@ -81,7 +81,7 @@ function StreamingAnswer({ text, isComplete }) {
 }
 
 // ============================================================================
-// QA LIST (unchanged)
+// QA LIST
 // ============================================================================
 
 function QAList({ qaList }) {
@@ -125,6 +125,7 @@ export default function InterviewAssist() {
   const navigate = useNavigate();
   const { user, loading } = useAuth();
 
+  // Persona & Settings State
   const [personaId] = useState(
     location.state?.personaId || localStorage.getItem("selectedPersona") || null
   );
@@ -153,7 +154,9 @@ export default function InterviewAssist() {
           advancedQuestionDetection: true,
           messageDirection: "bottom",
           autoScroll: true,
-          programmingLanguage: "Python"
+          programmingLanguage: "Python",
+          selectedResponseStyleId: "concise",
+          defaultModel: "gpt-4o-mini"
         };
     } catch {
       return {
@@ -163,12 +166,14 @@ export default function InterviewAssist() {
         advancedQuestionDetection: true,
         messageDirection: "bottom",
         autoScroll: true,
-        programmingLanguage: "Python"
+        programmingLanguage: "Python",
+        selectedResponseStyleId: "concise",
+        defaultModel: "gpt-4o-mini"
       };
     }
   });
 
-  // States
+  // Component States
   const [isRecording, setIsRecording] = useState(false);
   const [qaList, setQaList] = useState([]);
   const [candidateTranscript, setCandidateTranscript] = useState([]);
@@ -187,11 +192,11 @@ export default function InterviewAssist() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isStreamingComplete, setIsStreamingComplete] = useState(false);
 
-  // Current paragraph being built (accumulated from is_final/speech_final)
+  // Current paragraph building states
   const [currentCandidateParagraph, setCurrentCandidateParagraph] = useState("");
   const [currentInterviewerParagraph, setCurrentInterviewerParagraph] = useState("");
   
-  // Pure interim (showing in real-time while speaking, NOT is_final)
+  // Pure interim (real-time, not is_final)
   const [currentCandidateInterim, setCurrentCandidateInterim] = useState("");
   const [currentInterviewerInterim, setCurrentInterviewerInterim] = useState("");
 
@@ -211,7 +216,7 @@ export default function InterviewAssist() {
   const candidatePauseTimerRef = useRef(null);
   const interviewerPauseTimerRef = useRef(null);
   
-  // ✅ NEW: Track state with refs to prevent race conditions
+  // Track state with refs to prevent race conditions
   const candidateParagraphRef = useRef("");
   const interviewerParagraphRef = useRef("");
 
@@ -240,7 +245,7 @@ export default function InterviewAssist() {
   }, [qaList, currentAnswer, settings.autoScroll]);
 
   // ============================================================================
-  // LEFT PANEL: DEEPGRAM
+  // LEFT PANEL: DEEPGRAM DUAL-STREAM TRANSCRIPTION
   // ============================================================================
 
   const connectDeepgram = () => {
@@ -296,7 +301,6 @@ export default function InterviewAssist() {
     });
   };
 
-  // ✅ DEFINITIVE FIX: Using refs to track state and prevent overlapping displays
   const handleDeepgramTranscript = (data) => {
     const { stream, transcript, is_final, speech_final } = data;
 
@@ -305,25 +309,20 @@ export default function InterviewAssist() {
     const pauseInterval = (settings.pauseInterval || 2.0) * 1000;
 
     if (stream === 'candidate') {
-      // Clear any existing pause timer
       if (candidatePauseTimerRef.current) {
         clearTimeout(candidatePauseTimerRef.current);
       }
 
       if (is_final || speech_final) {
-        // ✅ Clear interim IMMEDIATELY (synchronously)
         setCurrentCandidateInterim('');
         
-        // Update ref
         const newParagraph = candidateParagraphRef.current 
           ? `${candidateParagraphRef.current} ${transcript.trim()}` 
           : transcript.trim();
         candidateParagraphRef.current = newParagraph;
         
-        // Update state
         setCurrentCandidateParagraph(newParagraph);
 
-        // Set pause timer to finalize paragraph
         candidatePauseTimerRef.current = setTimeout(() => {
           if (candidateParagraphRef.current) {
             const finalText = candidateParagraphRef.current;
@@ -338,37 +337,30 @@ export default function InterviewAssist() {
               id: Date.now() + Math.random()
             }]);
             
-            // Clear both ref and state
             candidateParagraphRef.current = '';
             setCurrentCandidateParagraph('');
           }
         }, pauseInterval);
       } else {
-        // Only show interim if NO paragraph is being built
         if (!candidateParagraphRef.current) {
           setCurrentCandidateInterim(transcript);
         }
       }
     } else if (stream === 'interviewer') {
-      // Clear any existing pause timer
       if (interviewerPauseTimerRef.current) {
         clearTimeout(interviewerPauseTimerRef.current);
       }
 
       if (is_final || speech_final) {
-        // ✅ Clear interim IMMEDIATELY (synchronously)
         setCurrentInterviewerInterim('');
         
-        // Update ref
         const newParagraph = interviewerParagraphRef.current 
           ? `${interviewerParagraphRef.current} ${transcript.trim()}` 
           : transcript.trim();
         interviewerParagraphRef.current = newParagraph;
         
-        // Update state
         setCurrentInterviewerParagraph(newParagraph);
 
-        // Set pause timer to finalize paragraph
         interviewerPauseTimerRef.current = setTimeout(() => {
           if (interviewerParagraphRef.current) {
             const finalText = interviewerParagraphRef.current;
@@ -383,13 +375,22 @@ export default function InterviewAssist() {
               id: Date.now() + Math.random()
             }]);
             
-            // Clear both ref and state
+            // ⭐ FIXED: Send final transcript to Q&A WebSocket
+            if (qaWsRef.current && qaWsRef.current.readyState === WebSocket.OPEN) {
+              qaWsRef.current.send(JSON.stringify({
+                type: "transcript",
+                transcript: finalText,
+                is_final: true,
+                speech_final: true
+              }));
+              console.log("📤 Sent to Q&A:", finalText.substring(0, 50) + "...");
+            }
+            
             interviewerParagraphRef.current = '';
             setCurrentInterviewerParagraph('');
           }
         }, pauseInterval);
       } else {
-        // Only show interim if NO paragraph is being built
         if (!interviewerParagraphRef.current) {
           setCurrentInterviewerInterim(transcript);
         }
@@ -531,7 +532,6 @@ export default function InterviewAssist() {
   };
 
   const stopDeepgramCapture = () => {
-    // Clear pause timers
     if (candidatePauseTimerRef.current) {
       clearTimeout(candidatePauseTimerRef.current);
     }
@@ -539,7 +539,6 @@ export default function InterviewAssist() {
       clearTimeout(interviewerPauseTimerRef.current);
     }
 
-    // Finalize any remaining paragraphs using refs
     if (candidateParagraphRef.current) {
       setCandidateTranscript(prev => [...prev, {
         text: candidateParagraphRef.current,
@@ -564,6 +563,17 @@ export default function InterviewAssist() {
         }),
         id: Date.now() + Math.random()
       }]);
+      
+      // Send final transcript to Q&A before clearing
+      if (qaWsRef.current && qaWsRef.current.readyState === WebSocket.OPEN) {
+        qaWsRef.current.send(JSON.stringify({
+          type: "transcript",
+          transcript: interviewerParagraphRef.current,
+          is_final: true,
+          speech_final: true
+        }));
+      }
+      
       interviewerParagraphRef.current = '';
       setCurrentInterviewerParagraph('');
     }
@@ -603,7 +613,7 @@ export default function InterviewAssist() {
   };
 
   // ============================================================================
-  // RIGHT PANEL: Q&A (unchanged from paste.txt)
+  // RIGHT PANEL: Q&A WITH DEEPGRAM TRANSCRIPTS
   // ============================================================================
 
   const connectQA = () => {
@@ -625,14 +635,14 @@ export default function InterviewAssist() {
           job_description: personaData?.job_description || "",
           resume_text: personaData?.resume_text || "",
           resume_filename: personaData?.resume_filename || "",
+          custom_style_prompt: settings.custom_style_prompt || null,
           settings: {
             audioLanguage: settings.audioLanguage || "English",
             pauseInterval: settings.pauseInterval || 2.0,
             advancedQuestionDetection: settings.advancedQuestionDetection !== false,
             selectedResponseStyleId: settings.selectedResponseStyleId || "concise",
             responseStyle: settings.responseStyle || "professional",
-            defaultModel: settings.default_model || "gpt-4o-mini",
-            codingModel: settings.coding_model || "gpt-4o-mini",
+            defaultModel: settings.defaultModel || "gpt-4o-mini",
             programmingLanguage: settings.programmingLanguage || "Python",
             interviewInstructions: settings.interviewInstructions || "",
             messageDirection: settings.messageDirection || "bottom",
@@ -771,7 +781,6 @@ export default function InterviewAssist() {
     setDeepgramStatus("Stopped");
     setQaStatus("Stopped");
     
-    // Clear all refs and states
     candidateParagraphRef.current = '';
     interviewerParagraphRef.current = '';
     setCurrentCandidateParagraph('');
@@ -994,7 +1003,7 @@ export default function InterviewAssist() {
 
       {/* Main Content */}
       <div className="flex-1 flex overflow-hidden">
-        {/* LEFT: Deepgram */}
+        {/* LEFT: Deepgram Dual-Stream Transcription */}
         <div className="w-1/2 border-r border-gray-800 flex flex-col">
           <div className="bg-gray-900 border-b border-gray-800 flex items-center">
             <button
@@ -1082,7 +1091,6 @@ export default function InterviewAssist() {
                   </div>
                 ))}
 
-                {/* ✅ DEFINITIVE FIX: Only display paragraph if it exists, otherwise display interim */}
                 {currentParagraph && (
                   <div
                     className={`bg-gray-900/50 rounded-lg p-4 border-2 ${
@@ -1105,7 +1113,6 @@ export default function InterviewAssist() {
                   </div>
                 )}
                 
-                {/* Only show interim if no paragraph */}
                 {!currentParagraph && currentInterim && (
                   <div
                     className={`bg-gray-900/50 rounded-lg p-4 border-2 ${
@@ -1133,7 +1140,7 @@ export default function InterviewAssist() {
           </div>
         </div>
 
-        {/* RIGHT: Q&A */}
+        {/* RIGHT: Q&A Copilot */}
         <div className="w-1/2 flex flex-col">
           <div className="bg-gray-900 px-6 py-3 border-b border-gray-800 flex items-center justify-between">
             <div>
@@ -1294,7 +1301,7 @@ export default function InterviewAssist() {
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between py-1">
                     <span className="text-gray-400">Style:</span>
-                    <span className="text-white font-medium">{settings.responseStyle}</span>
+                    <span className="text-white font-medium">{settings.selectedResponseStyleId || settings.responseStyle}</span>
                   </div>
                   <div className="flex justify-between py-1">
                     <span className="text-gray-400">Language:</span>
@@ -1308,15 +1315,20 @@ export default function InterviewAssist() {
                     <span className="text-gray-400">Coding:</span>
                     <span className="text-white font-medium">{settings.programmingLanguage}</span>
                   </div>
+                  <div className="flex justify-between py-1">
+                    <span className="text-gray-400">Model:</span>
+                    <span className="text-white font-medium">{settings.defaultModel}</span>
+                  </div>
                 </div>
               </div>
 
               <div className="bg-blue-900/20 border border-blue-800/50 rounded-lg p-4">
                 <h4 className="text-sm font-medium mb-2 text-blue-300">💡 How It Works</h4>
                 <ul className="text-gray-400 text-sm space-y-1 list-disc list-inside">
-                  <li>Deepgram: Real-time transcription</li>
-                  <li>Q&A: Automatic answer generation</li>
+                  <li>Deepgram: Real-time transcription (dual-stream)</li>
+                  <li>Q&A: Automatic answer generation from transcripts</li>
                   <li>Pause: {settings.pauseInterval}s creates new paragraph</li>
+                  <li>Browser-based audio capture (100% client-side)</li>
                 </ul>
               </div>
 
