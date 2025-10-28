@@ -260,7 +260,7 @@ export default function InterviewAssist() {
       };
       const language = languageMap[settings.audioLanguage] || "en";
 
-      const ws = new WebSocket(`ws://127.0.0.1:8000/ws/dual-transcribe?language=${language}`);
+      const ws = new WebSocket(`wss://interview-assist-1.onrender.com/ws/dual-transcribe?language=${language}`);
 
       ws.onopen = () => {
         console.log('✓ Deepgram connected');
@@ -618,7 +618,7 @@ export default function InterviewAssist() {
 
   const connectQA = () => {
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket("ws://127.0.0.1:8000/ws/live-interview");
+      const ws = new WebSocket("wss://interview-assist-1.onrender.com/ws/live-interview");
 
       ws.onopen = () => {
         console.log("✅ Q&A connected");
