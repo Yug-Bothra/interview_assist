@@ -245,7 +245,7 @@ export default function InterviewAssist() {
   }, [qaList, currentAnswer, settings.autoScroll]);
 
   // ============================================================================
-  // LEFT PANEL: DEEPGRAM DUAL-STREAM TRANSCRIPTION
+  // LEFT PANEL: DEEPGRAM DUAL-STREAM TRANSCRIPTION - ✅ FIXED
   // ============================================================================
 
   const connectDeepgram = () => {
@@ -266,6 +266,10 @@ export default function InterviewAssist() {
         console.log('✓ Deepgram connected');
         setDeepgramStatus("Connected");
         setTabAudioError("");
+        
+        // ✅ FIX: Send immediate KeepAlive to signal activity
+        ws.send(JSON.stringify({ type: "KeepAlive" }));
+        
         resolve(ws);
       };
 
@@ -281,7 +285,7 @@ export default function InterviewAssist() {
             console.log('✓ Deepgram:', data.message);
           }
         } catch (e) {
-          console.error('Deepgram parse error:', e);
+          console.error('❌ Deepgram parse error:', e);
         }
       };
 
@@ -292,9 +296,23 @@ export default function InterviewAssist() {
         reject(error);
       };
 
-      ws.onclose = () => {
-        console.log('🔌 Deepgram closed');
+      ws.onclose = (event) => {
+        // ✅ FIX: Log close code for debugging
+        console.log(`🔌 Deepgram closed: code=${event.code}, reason=${event.reason || 'none'}`);
         setDeepgramStatus("Disconnected");
+        
+        // ✅ FIX: Auto-reconnect on abnormal closure (not manual stop)
+        if (event.code !== 1000 && isRecording) {
+          console.log("⚠️ Abnormal close, attempting reconnect in 2s...");
+          setTimeout(() => {
+            if (isRecording) {
+              console.log("🔄 Reconnecting Deepgram...");
+              connectDeepgram()
+                .then(() => console.log("✅ Deepgram reconnected"))
+                .catch((err) => console.error("❌ Reconnect failed:", err));
+            }
+          }, 2000);
+        }
       };
 
       deepgramWsRef.current = ws;
@@ -375,7 +393,7 @@ export default function InterviewAssist() {
               id: Date.now() + Math.random()
             }]);
             
-            // ⭐ FIXED: Send final transcript to Q&A WebSocket
+            // Send final transcript to Q&A WebSocket
             if (qaWsRef.current && qaWsRef.current.readyState === WebSocket.OPEN) {
               qaWsRef.current.send(JSON.stringify({
                 type: "transcript",
@@ -398,55 +416,59 @@ export default function InterviewAssist() {
     }
   };
 
+  // ✅ FIXED: Start microphone FIRST, returns Promise
   const startMicrophoneCapture = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          sampleRate: 16000,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }
-      });
+    return new Promise(async (resolve, reject) => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            sampleRate: 16000,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        });
 
-      candidateStreamRef.current = stream;
+        candidateStreamRef.current = stream;
 
-      const audioContext = new (window.AudioContext || window.webkitAudioContext)({
-        sampleRate: 16000
-      });
-      candidateAudioContextRef.current = audioContext;
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)({
+          sampleRate: 16000
+        });
+        candidateAudioContextRef.current = audioContext;
 
-      const source = audioContext.createMediaStreamSource(stream);
-      const processor = audioContext.createScriptProcessor(4096, 1, 1);
-      candidateProcessorRef.current = processor;
+        const source = audioContext.createMediaStreamSource(stream);
+        const processor = audioContext.createScriptProcessor(4096, 1, 1);
+        candidateProcessorRef.current = processor;
 
-      processor.onaudioprocess = (e) => {
-        if (!deepgramWsRef.current || deepgramWsRef.current.readyState !== WebSocket.OPEN || isPaused) return;
+        processor.onaudioprocess = (e) => {
+          if (!deepgramWsRef.current || deepgramWsRef.current.readyState !== WebSocket.OPEN || isPaused) return;
 
-        const inputData = e.inputBuffer.getChannelData(0);
-        const pcm16 = new Int16Array(inputData.length);
+          const inputData = e.inputBuffer.getChannelData(0);
+          const pcm16 = new Int16Array(inputData.length);
 
-        for (let i = 0; i < inputData.length; i++) {
-          const s = Math.max(-1, Math.min(1, inputData[i]));
-          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-        }
+          for (let i = 0; i < inputData.length; i++) {
+            const s = Math.max(-1, Math.min(1, inputData[i]));
+            pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+          }
 
-        deepgramWsRef.current.send(JSON.stringify({
-          type: 'candidate',
-          audio: Array.from(pcm16)
-        }));
-      };
+          deepgramWsRef.current.send(JSON.stringify({
+            type: 'candidate',
+            audio: Array.from(pcm16)
+          }));
+        };
 
-      source.connect(processor);
-      processor.connect(audioContext.destination);
+        source.connect(processor);
+        processor.connect(audioContext.destination);
 
-      console.log('✓ Microphone started');
-    } catch (err) {
-      console.error('Microphone error:', err);
-      setTabAudioError('Microphone denied');
-      throw err;
-    }
+        console.log('✓ Microphone started');
+        resolve(); // ✅ Resolve after setup complete
+      } catch (err) {
+        console.error('❌ Microphone error:', err);
+        setTabAudioError('Microphone denied');
+        reject(err);
+      }
+    });
   };
 
   const startSystemAudioCapture = async () => {
@@ -517,7 +539,7 @@ export default function InterviewAssist() {
       console.log('✓ System audio started');
       setShowTabModal(false);
     } catch (err) {
-      console.error('System audio error:', err);
+      console.error('❌ System audio error:', err);
 
       if (err.name === 'NotAllowedError') {
         setTabAudioError('Screen share denied');
@@ -564,7 +586,6 @@ export default function InterviewAssist() {
         id: Date.now() + Math.random()
       }]);
       
-      // Send final transcript to Q&A before clearing
       if (qaWsRef.current && qaWsRef.current.readyState === WebSocket.OPEN) {
         qaWsRef.current.send(JSON.stringify({
           type: "transcript",
@@ -708,13 +729,13 @@ export default function InterviewAssist() {
               break;
 
             case "error":
-              console.error("Q&A error:", data.message);
+              console.error("❌ Q&A error:", data.message);
               setQaStatus(`⚠️ ${data.message}`);
               setIsGenerating(false);
               break;
           }
         } catch (err) {
-          console.error("Parse error:", err);
+          console.error("❌ Parse error:", err);
         }
       };
 
@@ -753,21 +774,31 @@ export default function InterviewAssist() {
     });
   };
 
+  // ✅ CRITICAL FIX: Microphone FIRST, then Deepgram connection
   const startRecording = async () => {
     try {
       setTabAudioError("");
 
-      await connectDeepgram();
+      // ✅ STEP 1: Start microphone FIRST and wait for it to be ready
+      console.log("🎤 Starting microphone...");
       await startMicrophoneCapture();
+
+      // ✅ STEP 2: THEN connect to Deepgram (audio is already flowing)
+      console.log("🌐 Connecting to Deepgram...");
+      await connectDeepgram();
+
+      // ✅ STEP 3: Show tab selection modal
       setShowTabModal(true);
 
+      // ✅ STEP 4: Connect to Q&A service
+      console.log("🤖 Connecting to Q&A...");
       await connectQA();
 
       setIsRecording(true);
       setDeepgramStatus("🎤 Recording (Select Tab)");
       setQaStatus("🤖 Q&A Active");
     } catch (err) {
-      console.error('Failed to start:', err);
+      console.error('❌ Failed to start:', err);
       stopDeepgramCapture();
       stopQA();
       setIsRecording(false);
