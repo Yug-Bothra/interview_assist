@@ -48,6 +48,7 @@ class ReconnectingWebSocket {
         this.ws.onmessage = (event) => {
           const data = JSON.parse(event.data);
           
+          // Handle server ping
           if (data.type === "ping") {
             this.send({ type: "pong" });
             console.log("🏓 Received ping, sent pong");
@@ -78,6 +79,7 @@ class ReconnectingWebSocket {
   }
 
   startPingPong() {
+    // Send ping every 25 seconds to keep connection alive
     this.pingInterval = setInterval(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.send({ type: "ping" });
@@ -106,7 +108,9 @@ class ReconnectingWebSocket {
 
     this.reconnectTimeout = setTimeout(() => {
       console.log(`🔄 Attempting reconnection...`);
-      this.connect().catch(() => {});
+      this.connect().catch(() => {
+        // Reconnection will be scheduled again by onclose handler
+      });
     }, delay);
   }
 
@@ -136,7 +140,7 @@ class ReconnectingWebSocket {
 }
 
 // ============================================================================
-// STREAMING COMPONENTS
+// STREAMING COMPONENTS (Keep your existing ones)
 // ============================================================================
 
 function StreamingText({ text, isComplete, className = "" }) {
@@ -242,6 +246,7 @@ export default function InterviewAssist() {
   const navigate = useNavigate();
   const { user, loading } = useAuth();
 
+  // Persona & Settings State
   const [personaId] = useState(
     location.state?.personaId || localStorage.getItem("selectedPersona") || null
   );
@@ -289,6 +294,7 @@ export default function InterviewAssist() {
     }
   });
 
+  // Component States
   const [isRecording, setIsRecording] = useState(false);
   const [qaList, setQaList] = useState([]);
   const [candidateTranscript, setCandidateTranscript] = useState([]);
@@ -302,20 +308,24 @@ export default function InterviewAssist() {
   const [showTabModal, setShowTabModal] = useState(false);
   const [tabAudioError, setTabAudioError] = useState("");
 
+  // Current Q&A states
   const [currentQuestion, setCurrentQuestion] = useState("");
   const [currentAnswer, setCurrentAnswer] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [isStreamingComplete, setIsStreamingComplete] = useState(false);
 
+  // Current paragraph building states
   const [currentCandidateParagraph, setCurrentCandidateParagraph] = useState("");
   const [currentInterviewerParagraph, setCurrentInterviewerParagraph] = useState("");
 
+  // Pure interim (real-time, not is_final)
   const [currentCandidateInterim, setCurrentCandidateInterim] = useState("");
   const [currentInterviewerInterim, setCurrentInterviewerInterim] = useState("");
 
+  // Refs
   const deepgramWsRef = useRef(null);
   const qaWsRef = useRef(null);
-  const reconnectingQaWsRef = useRef(null);
+  const reconnectingQaWsRef = useRef(null); // ✅ ADDED
   const candidateStreamRef = useRef(null);
   const interviewerStreamRef = useRef(null);
   const candidateAudioContextRef = useRef(null);
@@ -325,18 +335,22 @@ export default function InterviewAssist() {
   const transcriptEndRef = useRef(null);
   const copilotEndRef = useRef(null);
 
+  // Pause detection timer refs
   const candidatePauseTimerRef = useRef(null);
   const interviewerPauseTimerRef = useRef(null);
 
+  // Track state with refs to prevent race conditions
   const candidateParagraphRef = useRef("");
   const interviewerParagraphRef = useRef("");
 
+  // AUTH CHECK
   useEffect(() => {
     if (!loading && !user) {
       navigate("/sign-in");
     }
   }, [user, loading, navigate]);
 
+  // AUTO-SCROLL
   useEffect(() => {
     if (settings.autoScroll) {
       transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -358,7 +372,7 @@ export default function InterviewAssist() {
   }, [qaList, currentAnswer, settings.autoScroll]);
 
   // ============================================================================
-  // DEEPGRAM CONNECTION
+  // LEFT PANEL: DEEPGRAM DUAL-STREAM TRANSCRIPTION
   // ============================================================================
 
   const connectDeepgram = () => {
@@ -378,32 +392,21 @@ export default function InterviewAssist() {
       );
 
       ws.onopen = () => {
-        console.log("✓ Deepgram WebSocket opened");
-        
-        // Send start signal to backend
-        ws.send(JSON.stringify({ type: "start" }));
-        console.log("📤 Sent start signal to backend");
-        
-        setDeepgramStatus("Connecting...");
+        console.log("✓ Deepgram connected");
+        setDeepgramStatus("Connected");
         setTabAudioError("");
+        resolve(ws);
       };
 
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          
-          if (data.type === "ready") {
-            console.log("✓ Deepgram: Backend ready");
-          } else if (data.type === "connected") {
-            console.log("✓ Deepgram: Streams connected");
-            setDeepgramStatus("Connected");
-            resolve(ws);
-          } else if (data.type === "transcript") {
+          if (data.type === "transcript") {
             handleDeepgramTranscript(data);
           } else if (data.type === "error") {
-            console.error("Deepgram error:", data.message);
             setTabAudioError(data.message);
-            reject(new Error(data.message));
+          } else if (data.type === "ready" || data.type === "connected") {
+            console.log("✓ Deepgram:", data.message);
           }
         } catch (e) {
           console.error("Deepgram parse error:", e);
@@ -411,21 +414,15 @@ export default function InterviewAssist() {
       };
 
       ws.onerror = (error) => {
-        console.error("❌ Deepgram WebSocket error:", error);
+        console.error("Deepgram error:", error);
         setTabAudioError("Connection error. Backend must be running.");
         setDeepgramStatus("Error");
         reject(error);
       };
 
-      ws.onclose = (event) => {
-        console.log("🔌 Deepgram WebSocket closed", event.code, event.reason);
+      ws.onclose = () => {
+        console.log("🔌 Deepgram closed");
         setDeepgramStatus("Disconnected");
-        
-        if (event.code === 1006) {
-          console.error("❌ Abnormal closure (1006) - connection dropped unexpectedly");
-        } else if (event.code === 1000) {
-          console.log("✓ Normal closure (1000)");
-        }
       };
 
       deepgramWsRef.current = ws;
@@ -512,7 +509,7 @@ export default function InterviewAssist() {
               }
             ]);
             
-            // Send to Q&A using ReconnectingWebSocket
+            // ✅ FIXED: Send using ReconnectingWebSocket
             if (reconnectingQaWsRef.current) {
               const sent = reconnectingQaWsRef.current.send({
                 type: "transcript",
@@ -719,6 +716,7 @@ export default function InterviewAssist() {
         }
       ]);
 
+      // ✅ FIXED: Send final transcript using ReconnectingWebSocket
       if (reconnectingQaWsRef.current) {
         reconnectingQaWsRef.current.send({
           type: "transcript",
@@ -767,7 +765,7 @@ export default function InterviewAssist() {
   };
 
   // ============================================================================
-  // Q&A CONNECTION
+  // RIGHT PANEL: Q&A WITH DEEPGRAM TRANSCRIPTS
   // ============================================================================
 
   const connectQA = () => {
@@ -842,6 +840,7 @@ export default function InterviewAssist() {
         if (status === "connected") {
           setQaStatus("Initializing...");
           
+          // Send init message
           const initMessage = {
             type: "init",
             domain: domain || "Technical",
@@ -888,6 +887,8 @@ export default function InterviewAssist() {
       );
 
       reconnectingQaWsRef.current.connect().catch(reject);
+      
+      // Store reference for compatibility
       qaWsRef.current = reconnectingQaWsRef.current.ws;
     });
   };
@@ -913,37 +914,20 @@ export default function InterviewAssist() {
     });
   };
 
-  // ============================================================================
-  // RECORDING CONTROL
-  // ============================================================================
-
   const startRecording = async () => {
     try {
       setTabAudioError("");
-      console.log("🎬 Starting recording sequence...");
 
-      console.log("1️⃣ Connecting to Deepgram...");
       await connectDeepgram();
-      console.log("✅ Deepgram connected");
-
-      console.log("2️⃣ Starting microphone...");
       await startMicrophoneCapture();
-      console.log("✅ Microphone started");
-
-      console.log("3️⃣ Prompting for system audio...");
       setShowTabModal(true);
-
-      console.log("4️⃣ Connecting Q&A...");
       await connectQA();
-      console.log("✅ Q&A connected");
 
       setIsRecording(true);
-      setDeepgramStatus("Recording - Select Tab Audio");
+      setDeepgramStatus("Recording - Select Tab");
       setQaStatus("🤖 Q&A Active");
-      
-      console.log("✅ All systems ready!");
     } catch (err) {
-      console.error("❌ Failed to start recording:", err);
+      console.error("Failed to start:", err);
       stopDeepgramCapture();
       stopQA();
       setIsRecording(false);
@@ -1203,7 +1187,7 @@ export default function InterviewAssist() {
 
       {/* MAIN CONTENT */}
       <div className="flex-1 flex overflow-hidden">
-        {/* LEFT PANEL */}
+        {/* LEFT: Deepgram Dual-Stream Transcription */}
         <div className="w-1/2 border-r border-gray-800 flex flex-col">
           <div className="bg-gray-900 border-b border-gray-800 flex items-center">
             <button
@@ -1360,7 +1344,7 @@ export default function InterviewAssist() {
           </div>
         </div>
 
-        {/* RIGHT PANEL */}
+        {/* RIGHT: Q&A Copilot */}
         <div className="w-1/2 flex flex-col">
           <div className="bg-gray-900 px-6 py-3 border-b border-gray-800 flex items-center justify-between">
             <div>
