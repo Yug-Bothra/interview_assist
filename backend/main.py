@@ -1,8 +1,9 @@
 """
-Render-Compatible Interview Assistant Backend - FIXED
+Render-Compatible Interview Assistant Backend
 Audio capture: 100% browser-based (no server audio devices needed)
 LEFT PANEL: Deepgram dual-stream transcription display
 RIGHT PANEL: Q&A with Deepgram transcripts (no Whisper, no audio_utils.py)
+✅ ADDED: ping_interval & ping_timeout for both WebSockets
 """
 
 import asyncio
@@ -44,7 +45,7 @@ app.add_middleware(
 # ============================================================================
 
 DEFAULT_MODEL = "gpt-4o-mini"
-KEEPALIVE_INTERVAL = 5  # Send every 5 seconds (well under 10s timeout)
+KEEPALIVE_INTERVAL = 5
 
 class ConnectionState(Enum):
     DISCONNECTED = "disconnected"
@@ -87,108 +88,73 @@ class DeepgramStream:
         self.is_closing = False
         self.state = ConnectionState.DISCONNECTED
         self.max_retries = 3
-        self.state_lock = asyncio.Lock()  # ✅ FIX: Add lock for state management
         
     async def connect(self) -> None:
-        async with self.state_lock:
-            if self.state != ConnectionState.DISCONNECTED:
-                print(f"⚠️ Already connecting/connected ({self.stream_type.value})")
-                return
-            self.state = ConnectionState.CONNECTING
+        self.state = ConnectionState.CONNECTING
         
         for attempt in range(self.max_retries):
             try:
                 url = get_deepgram_url(self.language)
+                # ✅ ADDED: ping_interval and ping_timeout
                 self.ws = await websockets.connect(
                     url,
                     extra_headers={"Authorization": f"Token {self.api_key}"},
-                    ping_interval=20,  # ✅ FIX: Enable ping/pong
-                    ping_timeout=10,
+                    ping_interval=20,  # ✅ Send ping every 20 seconds
+                    ping_timeout=30,   # ✅ Wait 30 seconds for pong response
                     max_size=10_000_000,
                     close_timeout=5
                 )
                 
-                async with self.state_lock:
-                    self.state = ConnectionState.CONNECTED
+                self.state = ConnectionState.CONNECTED
                 emoji = "🎤" if self.stream_type == StreamType.CANDIDATE else "💻"
                 print(f"{emoji} Deepgram connected ({self.stream_type.value})")
-                
-                # ✅ FIX: Start KeepAlive only after successful connection
-                self.keepalive_task = asyncio.create_task(self.send_keepalive())
                 return
-                
             except Exception as e:
-                print(f"❌ Deepgram attempt {attempt + 1} failed ({self.stream_type.value}): {e}")
+                print(f"❌ Deepgram attempt {attempt + 1} failed: {e}")
                 if attempt < self.max_retries - 1:
                     await asyncio.sleep(1 * (attempt + 1))
                 else:
-                    async with self.state_lock:
-                        self.state = ConnectionState.DISCONNECTED
+                    self.state = ConnectionState.DISCONNECTED
                     raise
     
     async def send_keepalive(self) -> None:
-        """Send KeepAlive messages every 5 seconds to prevent 10s timeout"""
         try:
-            while True:
-                async with self.state_lock:
-                    if self.is_closing or self.state != ConnectionState.CONNECTED:
-                        break
-                
+            while not self.is_closing and self.ws and self.state == ConnectionState.CONNECTED:
                 await asyncio.sleep(KEEPALIVE_INTERVAL)
-                
-                async with self.state_lock:
-                    if self.is_closing or not self.ws:
+                if self.ws and not self.is_closing:
+                    try:
+                        await self.ws.send(json.dumps({"type": "KeepAlive"}))
+                    except Exception:
                         break
-                
-                try:
-                    await self.ws.send(json.dumps({"type": "KeepAlive"}))
-                    # print(f"💓 KeepAlive sent ({self.stream_type.value})")  # Optional: comment out for less noise
-                except Exception as e:
-                    print(f"❌ KeepAlive failed ({self.stream_type.value}): {e}")
-                    break
-                    
         except asyncio.CancelledError:
-            print(f"⏹️ KeepAlive cancelled ({self.stream_type.value})")
-        except Exception as e:
-            print(f"❌ KeepAlive error ({self.stream_type.value}): {e}")
+            pass
     
     async def send_audio(self, audio_data: bytes) -> bool:
-        async with self.state_lock:
-            if not self.ws or self.is_closing or self.state != ConnectionState.CONNECTED:
-                return False
-        
+        if not self.ws or self.is_closing or self.state != ConnectionState.CONNECTED:
+            return False
         try:
-            await self.ws.send(audio_data)  # ✅ FIX: Send as bytes, not JSON
+            await self.ws.send(audio_data)
             return True
-        except Exception as e:
-            print(f"❌ Audio send failed ({self.stream_type.value}): {e}")
+        except Exception:
             return False
     
     async def receive_transcripts(self) -> Optional[dict]:
-        async with self.state_lock:
-            if not self.ws or self.state != ConnectionState.CONNECTED:
-                return None
-        
+        if not self.ws or self.state != ConnectionState.CONNECTED:
+            return None
         try:
             message = await asyncio.wait_for(self.ws.recv(), timeout=0.1)
             return json.loads(message)
-        except asyncio.TimeoutError:
+        except (asyncio.TimeoutError, ConnectionClosed):
             return None
-        except ConnectionClosed as e:
-            print(f"🔌 Connection closed ({self.stream_type.value}): code={e.code}, reason={e.reason}")
-            return None
-        except Exception as e:
-            print(f"❌ Receive error ({self.stream_type.value}): {e}")
+        except Exception:
             return None
     
     async def close(self) -> None:
-        async with self.state_lock:
-            if self.is_closing:
-                return
-            self.is_closing = True
-            self.state = ConnectionState.DISCONNECTING
+        if self.is_closing:
+            return
+        self.is_closing = True
+        self.state = ConnectionState.DISCONNECTING
         
-        # Cancel KeepAlive task
         if self.keepalive_task and not self.keepalive_task.done():
             self.keepalive_task.cancel()
             try:
@@ -196,17 +162,14 @@ class DeepgramStream:
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
         
-        # Close WebSocket
         if self.ws:
             try:
                 await self.ws.send(json.dumps({"type": "CloseStream"}))
                 await asyncio.sleep(0.1)
                 await asyncio.wait_for(self.ws.close(), timeout=2.0)
-            except Exception as e:
-                print(f"⚠️ Close error ({self.stream_type.value}): {e}")
-        
-        async with self.state_lock:
-            self.state = ConnectionState.DISCONNECTED
+            except Exception:
+                pass
+        self.state = ConnectionState.DISCONNECTED
 
 class DualStreamManager:
     def __init__(self, api_key: str, language: str = "en"):
@@ -216,9 +179,17 @@ class DualStreamManager:
         
     async def connect_all(self) -> None:
         try:
-            # ✅ FIX: Connect streams sequentially to avoid race conditions
-            await self.candidate_stream.connect()
-            await self.interviewer_stream.connect()
+            await asyncio.gather(
+                self.candidate_stream.connect(),
+                self.interviewer_stream.connect()
+            )
+            
+            self.candidate_stream.keepalive_task = asyncio.create_task(
+                self.candidate_stream.send_keepalive()
+            )
+            self.interviewer_stream.keepalive_task = asyncio.create_task(
+                self.interviewer_stream.send_keepalive()
+            )
             
             self.is_active = True
             print("✅ Deepgram streams ready")
@@ -454,7 +425,7 @@ CANDIDATE CONTEXT:
 async def websocket_dual_transcribe(websocket: WebSocket):
     """Deepgram display for Interviewer + Candidate"""
     await websocket.accept()
-    print("\n🎙️ Deepgram connection accepted")
+    print("\n🎙️ Deepgram connected")
     
     language = websocket.query_params.get("language", "en")
     stream_manager = DualStreamManager(DEEPGRAM_API_KEY, language)
@@ -477,7 +448,6 @@ async def websocket_dual_transcribe(websocket: WebSocket):
                         if not audio_data or not stream_type:
                             continue
                         
-                        # ✅ FIX: Convert array to bytes properly
                         if isinstance(audio_data, list):
                             import struct
                             audio_bytes = struct.pack(f'{len(audio_data)}h', *audio_data)
@@ -488,39 +458,22 @@ async def websocket_dual_transcribe(websocket: WebSocket):
                             audio_bytes = audio_data
                         
                         if stream_type == "candidate":
-                            success = await stream_manager.candidate_stream.send_audio(audio_bytes)
-                            if not success:
-                                print("⚠️ Candidate audio send failed")
+                            await stream_manager.candidate_stream.send_audio(audio_bytes)
                         elif stream_type == "interviewer":
-                            success = await stream_manager.interviewer_stream.send_audio(audio_bytes)
-                            if not success:
-                                print("⚠️ Interviewer audio send failed")
-                                
+                            await stream_manager.interviewer_stream.send_audio(audio_bytes)
                     except asyncio.TimeoutError:
                         continue
-                    except Exception as e:
-                        print(f"❌ Audio processing error: {e}")
             except Exception as e:
-                print(f"❌ Audio handler error: {e}")
+                print(f"❌ Audio error: {e}")
         
         async def handle_transcripts():
             async def process_stream(stream: DeepgramStream):
                 try:
-                    while stream_manager.is_active:
-                        async with stream.state_lock:
-                            if stream.state != ConnectionState.CONNECTED:
-                                await asyncio.sleep(0.1)
-                                continue
-                        
+                    while stream_manager.is_active and stream.state == ConnectionState.CONNECTED:
                         transcript_data = await stream.receive_transcripts()
                         
                         if not transcript_data:
                             await asyncio.sleep(0.01)
-                            continue
-                        
-                        # ✅ FIX: Log metadata events for debugging
-                        if transcript_data.get("type") == "Metadata":
-                            print(f"📋 Metadata ({stream.stream_type.value}): {transcript_data}")
                             continue
                         
                         if transcript_data.get("type") == "Results":
@@ -538,13 +491,9 @@ async def websocket_dual_transcribe(websocket: WebSocket):
                                         "is_final": transcript_data.get("is_final", False),
                                         "speech_final": transcript_data.get("speech_final", False)
                                     }
-                                    try:
-                                        await websocket.send_json(response)
-                                    except Exception as e:
-                                        print(f"❌ Failed to send transcript: {e}")
-                                        break
+                                    await websocket.send_json(response)
                 except Exception as e:
-                    print(f"❌ Stream processing error ({stream.stream_type.value}): {e}")
+                    print(f"❌ Stream error: {e}")
             
             await asyncio.gather(
                 process_stream(stream_manager.candidate_stream),
@@ -563,19 +512,15 @@ async def websocket_dual_transcribe(websocket: WebSocket):
         for task in pending:
             task.cancel()
     
-    except WebSocketDisconnect:
-        print("❌ Frontend disconnected")
     except Exception as e:
-        print(f"❌ Deepgram WebSocket error: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ Deepgram error: {e}")
     finally:
         await stream_manager.close_all()
         try:
             await websocket.close()
         except:
             pass
-        print("🔌 Deepgram connection closed\n")
+        print("🔌 Deepgram closed\n")
 
 # ============================================================================
 # WEBSOCKET: Q&A WITH DEEPGRAM TRANSCRIPTS (RIGHT PANEL)
@@ -590,6 +535,9 @@ async def websocket_live_interview(websocket: WebSocket):
     connection_state = ConnectionState.CONNECTED
     state_lock = asyncio.Lock()
     
+    # ✅ ADDED: Ping/pong keepalive task
+    ping_task: Optional[asyncio.Task] = None
+    
     async def get_state():
         async with state_lock:
             return connection_state
@@ -598,6 +546,23 @@ async def websocket_live_interview(websocket: WebSocket):
         nonlocal connection_state
         async with state_lock:
             connection_state = new_state
+    
+    # ✅ ADDED: Keepalive ping function
+    async def send_keepalive_pings():
+        """Send periodic pings to keep connection alive"""
+        try:
+            while await get_state() == ConnectionState.CONNECTED:
+                await asyncio.sleep(20)  # Send ping every 20 seconds
+                if await get_state() == ConnectionState.CONNECTED:
+                    try:
+                        await websocket.send_json({"type": "ping"})
+                        print("🏓 Sent keepalive ping")
+                    except Exception as e:
+                        print(f"❌ Ping failed: {e}")
+                        break
+        except asyncio.CancelledError:
+            print("⏹️ Keepalive task cancelled")
+            pass
     
     transcript_accumulator = None
     prev_questions = deque(maxlen=10)
@@ -633,6 +598,9 @@ async def websocket_live_interview(websocket: WebSocket):
     
     try:
         await safe_send({"type": "ready", "message": "Q&A ready"})
+        
+        # ✅ ADDED: Start keepalive ping task
+        ping_task = asyncio.create_task(send_keepalive_pings())
         
         while await get_state() == ConnectionState.CONNECTED:
             try:
@@ -724,8 +692,9 @@ async def websocket_live_interview(websocket: WebSocket):
                             else:
                                 print("⏭️  No question detected")
                 
-                elif data.get("type") == "ping":
-                    await safe_send({"type": "pong"})
+                # ✅ ADDED: Handle pong response from client
+                elif data.get("type") == "pong":
+                    print("🏓 Received pong from client")
                     
             except asyncio.TimeoutError:
                 if transcript_accumulator and transcript_accumulator.current_paragraph:
@@ -772,6 +741,15 @@ async def websocket_live_interview(websocket: WebSocket):
         traceback.print_exc()
     finally:
         await set_state(ConnectionState.DISCONNECTED)
+        
+        # ✅ ADDED: Cancel ping task on disconnect
+        if ping_task and not ping_task.done():
+            ping_task.cancel()
+            try:
+                await asyncio.wait_for(ping_task, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+        
         try:
             await websocket.close()
         except:
@@ -810,8 +788,9 @@ if __name__ == "__main__":
     print("=" * 70)
     print("✅ Audio capture: Browser-based (100%)")
     print("✅ No server audio devices required")
-    print("✅ Deepgram: Real-time transcription with KeepAlive")
+    print("✅ Deepgram: Real-time transcription with ping/pong keepalive")
     print("✅ OpenAI: Q&A generation")
+    print("✅ WebSocket keepalive: 20s ping interval")
     print("=" * 70 + "\n")
     
     uvicorn.run(

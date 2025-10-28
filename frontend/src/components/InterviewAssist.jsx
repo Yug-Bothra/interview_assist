@@ -16,6 +16,130 @@ import {
 import { jsPDF } from "jspdf";
 
 // ============================================================================
+// WEBSOCKET RECONNECTION UTILITIES
+// ============================================================================
+
+class ReconnectingWebSocket {
+  constructor(url, onMessage, onStatusChange, maxRetries = 5) {
+    this.url = url;
+    this.onMessage = onMessage;
+    this.onStatusChange = onStatusChange;
+    this.maxRetries = maxRetries;
+    this.retryCount = 0;
+    this.ws = null;
+    this.shouldReconnect = true;
+    this.reconnectTimeout = null;
+    this.pingInterval = null;
+  }
+
+  connect() {
+    return new Promise((resolve, reject) => {
+      try {
+        this.ws = new WebSocket(this.url);
+
+        this.ws.onopen = () => {
+          console.log(`✅ Connected: ${this.url}`);
+          this.retryCount = 0;
+          this.onStatusChange?.("connected");
+          this.startPingPong();
+          resolve(this.ws);
+        };
+
+        this.ws.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+          
+          // Handle server ping
+          if (data.type === "ping") {
+            this.send({ type: "pong" });
+            console.log("🏓 Received ping, sent pong");
+            return;
+          }
+          
+          this.onMessage?.(event);
+        };
+
+        this.ws.onerror = (error) => {
+          console.error(`❌ WebSocket error: ${this.url}`, error);
+          reject(error);
+        };
+
+        this.ws.onclose = (event) => {
+          console.log(`🔌 Connection closed: ${this.url}`, event.code, event.reason);
+          this.stopPingPong();
+          this.onStatusChange?.("disconnected");
+          
+          if (this.shouldReconnect && this.retryCount < this.maxRetries) {
+            this.scheduleReconnect();
+          }
+        };
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
+  startPingPong() {
+    // Send ping every 25 seconds to keep connection alive
+    this.pingInterval = setInterval(() => {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.send({ type: "ping" });
+        console.log("🏓 Sent keepalive ping");
+      }
+    }, 25000);
+  }
+
+  stopPingPong() {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
+    }
+  }
+
+  scheduleReconnect() {
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+    }
+
+    // Exponential backoff: 1s, 2s, 4s, 8s, 16s
+    const delay = Math.min(1000 * Math.pow(2, this.retryCount), 16000);
+    this.retryCount++;
+
+    console.log(`🔄 Reconnecting in ${delay}ms (attempt ${this.retryCount}/${this.maxRetries})`);
+    this.onStatusChange?.("reconnecting");
+
+    this.reconnectTimeout = setTimeout(() => {
+      console.log(`🔄 Attempting reconnection...`);
+      this.connect().catch(() => {
+        // Reconnection will be scheduled again by onclose handler
+      });
+    }, delay);
+  }
+
+  send(data) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(data));
+      return true;
+    }
+    return false;
+  }
+
+  close() {
+    this.shouldReconnect = false;
+    this.stopPingPong();
+    
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+    
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+  }
+}
+
+// ============================================================================
 // STREAMING COMPONENTS
 // ============================================================================
 
@@ -203,6 +327,7 @@ export default function InterviewAssist() {
   // Refs
   const deepgramWsRef = useRef(null);
   const qaWsRef = useRef(null);
+  const reconnectingQaWsRef = useRef(null);
   const candidateStreamRef = useRef(null);
   const interviewerStreamRef = useRef(null);
   const candidateAudioContextRef = useRef(null);
@@ -245,7 +370,7 @@ export default function InterviewAssist() {
   }, [qaList, currentAnswer, settings.autoScroll]);
 
   // ============================================================================
-  // LEFT PANEL: DEEPGRAM DUAL-STREAM TRANSCRIPTION - ✅ FIXED
+  // LEFT PANEL: DEEPGRAM DUAL-STREAM TRANSCRIPTION
   // ============================================================================
 
   const connectDeepgram = () => {
@@ -260,16 +385,14 @@ export default function InterviewAssist() {
       };
       const language = languageMap[settings.audioLanguage] || "en";
 
-      const ws = new WebSocket(`wss://interview-assist-1.onrender.com/ws/dual-transcribe?language=${language}`);
+      // 🔧 LOCALHOST URL - Change to production URL for deployment
+      const ws = new WebSocket(`ws://127.0.0.1:8000/ws/dual-transcribe?language=${language}`);
+      // 🚀 PRODUCTION: const ws = new WebSocket(`wss://your-domain.com/ws/dual-transcribe?language=${language}`);
 
       ws.onopen = () => {
         console.log('✓ Deepgram connected');
         setDeepgramStatus("Connected");
         setTabAudioError("");
-        
-        // ✅ FIX: Send immediate KeepAlive to signal activity
-        ws.send(JSON.stringify({ type: "KeepAlive" }));
-        
         resolve(ws);
       };
 
@@ -285,7 +408,7 @@ export default function InterviewAssist() {
             console.log('✓ Deepgram:', data.message);
           }
         } catch (e) {
-          console.error('❌ Deepgram parse error:', e);
+          console.error('Deepgram parse error:', e);
         }
       };
 
@@ -296,23 +419,9 @@ export default function InterviewAssist() {
         reject(error);
       };
 
-      ws.onclose = (event) => {
-        // ✅ FIX: Log close code for debugging
-        console.log(`🔌 Deepgram closed: code=${event.code}, reason=${event.reason || 'none'}`);
+      ws.onclose = () => {
+        console.log('🔌 Deepgram closed');
         setDeepgramStatus("Disconnected");
-        
-        // ✅ FIX: Auto-reconnect on abnormal closure (not manual stop)
-        if (event.code !== 1000 && isRecording) {
-          console.log("⚠️ Abnormal close, attempting reconnect in 2s...");
-          setTimeout(() => {
-            if (isRecording) {
-              console.log("🔄 Reconnecting Deepgram...");
-              connectDeepgram()
-                .then(() => console.log("✅ Deepgram reconnected"))
-                .catch((err) => console.error("❌ Reconnect failed:", err));
-            }
-          }, 2000);
-        }
       };
 
       deepgramWsRef.current = ws;
@@ -393,14 +502,14 @@ export default function InterviewAssist() {
               id: Date.now() + Math.random()
             }]);
             
-            // Send final transcript to Q&A WebSocket
-            if (qaWsRef.current && qaWsRef.current.readyState === WebSocket.OPEN) {
-              qaWsRef.current.send(JSON.stringify({
+            // ⭐ UPDATED: Send using reconnecting websocket
+            if (reconnectingQaWsRef.current) {
+              reconnectingQaWsRef.current.send({
                 type: "transcript",
                 transcript: finalText,
                 is_final: true,
                 speech_final: true
-              }));
+              });
               console.log("📤 Sent to Q&A:", finalText.substring(0, 50) + "...");
             }
             
@@ -416,59 +525,55 @@ export default function InterviewAssist() {
     }
   };
 
-  // ✅ FIXED: Start microphone FIRST, returns Promise
   const startMicrophoneCapture = async () => {
-    return new Promise(async (resolve, reject) => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            channelCount: 1,
-            sampleRate: 16000,
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
-          }
-        });
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: 16000,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
 
-        candidateStreamRef.current = stream;
+      candidateStreamRef.current = stream;
 
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)({
-          sampleRate: 16000
-        });
-        candidateAudioContextRef.current = audioContext;
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)({
+        sampleRate: 16000
+      });
+      candidateAudioContextRef.current = audioContext;
 
-        const source = audioContext.createMediaStreamSource(stream);
-        const processor = audioContext.createScriptProcessor(4096, 1, 1);
-        candidateProcessorRef.current = processor;
+      const source = audioContext.createMediaStreamSource(stream);
+      const processor = audioContext.createScriptProcessor(4096, 1, 1);
+      candidateProcessorRef.current = processor;
 
-        processor.onaudioprocess = (e) => {
-          if (!deepgramWsRef.current || deepgramWsRef.current.readyState !== WebSocket.OPEN || isPaused) return;
+      processor.onaudioprocess = (e) => {
+        if (!deepgramWsRef.current || deepgramWsRef.current.readyState !== WebSocket.OPEN || isPaused) return;
 
-          const inputData = e.inputBuffer.getChannelData(0);
-          const pcm16 = new Int16Array(inputData.length);
+        const inputData = e.inputBuffer.getChannelData(0);
+        const pcm16 = new Int16Array(inputData.length);
 
-          for (let i = 0; i < inputData.length; i++) {
-            const s = Math.max(-1, Math.min(1, inputData[i]));
-            pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-          }
+        for (let i = 0; i < inputData.length; i++) {
+          const s = Math.max(-1, Math.min(1, inputData[i]));
+          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
 
-          deepgramWsRef.current.send(JSON.stringify({
-            type: 'candidate',
-            audio: Array.from(pcm16)
-          }));
-        };
+        deepgramWsRef.current.send(JSON.stringify({
+          type: 'candidate',
+          audio: Array.from(pcm16)
+        }));
+      };
 
-        source.connect(processor);
-        processor.connect(audioContext.destination);
+      source.connect(processor);
+      processor.connect(audioContext.destination);
 
-        console.log('✓ Microphone started');
-        resolve(); // ✅ Resolve after setup complete
-      } catch (err) {
-        console.error('❌ Microphone error:', err);
-        setTabAudioError('Microphone denied');
-        reject(err);
-      }
-    });
+      console.log('✓ Microphone started');
+    } catch (err) {
+      console.error('Microphone error:', err);
+      setTabAudioError('Microphone denied');
+      throw err;
+    }
   };
 
   const startSystemAudioCapture = async () => {
@@ -539,7 +644,7 @@ export default function InterviewAssist() {
       console.log('✓ System audio started');
       setShowTabModal(false);
     } catch (err) {
-      console.error('❌ System audio error:', err);
+      console.error('System audio error:', err);
 
       if (err.name === 'NotAllowedError') {
         setTabAudioError('Screen share denied');
@@ -586,13 +691,14 @@ export default function InterviewAssist() {
         id: Date.now() + Math.random()
       }]);
       
-      if (qaWsRef.current && qaWsRef.current.readyState === WebSocket.OPEN) {
-        qaWsRef.current.send(JSON.stringify({
+      // Send final transcript to Q&A before clearing
+      if (reconnectingQaWsRef.current) {
+        reconnectingQaWsRef.current.send({
           type: "transcript",
           transcript: interviewerParagraphRef.current,
           is_final: true,
           speech_final: true
-        }));
+        });
       }
       
       interviewerParagraphRef.current = '';
@@ -634,48 +740,16 @@ export default function InterviewAssist() {
   };
 
   // ============================================================================
-  // RIGHT PANEL: Q&A WITH DEEPGRAM TRANSCRIPTS
+  // RIGHT PANEL: Q&A WITH AUTOMATIC RECONNECTION
   // ============================================================================
 
   const connectQA = () => {
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket("wss://interview-assist-1.onrender.com/ws/live-interview");
-
-      ws.onopen = () => {
-        console.log("✅ Q&A connected");
-        setQaStatus("Initializing...");
-
-        const initMessage = {
-          type: "init",
-          domain: domain || "Technical",
-          user_id: user?.id || null,
-          persona_id: personaId || null,
-          position: personaData?.position || "",
-          company_name: personaData?.company_name || "",
-          company_description: personaData?.company_description || "",
-          job_description: personaData?.job_description || "",
-          resume_text: personaData?.resume_text || "",
-          resume_filename: personaData?.resume_filename || "",
-          custom_style_prompt: settings.custom_style_prompt || null,
-          settings: {
-            audioLanguage: settings.audioLanguage || "English",
-            pauseInterval: settings.pauseInterval || 2.0,
-            advancedQuestionDetection: settings.advancedQuestionDetection !== false,
-            selectedResponseStyleId: settings.selectedResponseStyleId || "concise",
-            responseStyle: settings.responseStyle || "professional",
-            defaultModel: settings.defaultModel || "gpt-4o-mini",
-            programmingLanguage: settings.programmingLanguage || "Python",
-            interviewInstructions: settings.interviewInstructions || "",
-            messageDirection: settings.messageDirection || "bottom",
-            autoScroll: settings.autoScroll !== false
-          }
-        };
-
-        ws.send(JSON.stringify(initMessage));
-        resolve(ws);
-      };
-
-      ws.onmessage = (event) => {
+      // 🔧 LOCALHOST URL - Change to production URL for deployment
+      const qaUrl = "ws://127.0.0.1:8000/ws/live-interview";
+      // 🚀 PRODUCTION: const qaUrl = "wss://your-domain.com/ws/live-interview";
+      
+      const handleMessage = (event) => {
         try {
           const data = JSON.parse(event.data);
           console.log("📩 Q&A:", data.type, data);
@@ -729,36 +803,76 @@ export default function InterviewAssist() {
               break;
 
             case "error":
-              console.error("❌ Q&A error:", data.message);
+              console.error("Q&A error:", data.message);
               setQaStatus(`⚠️ ${data.message}`);
               setIsGenerating(false);
               break;
           }
         } catch (err) {
-          console.error("❌ Parse error:", err);
+          console.error("Parse error:", err);
         }
       };
 
-      ws.onerror = (error) => {
-        console.error("❌ Q&A error:", error);
-        setQaStatus("Error");
-        reject(error);
+      const handleStatusChange = (status) => {
+        if (status === "connected") {
+          setQaStatus("Initializing...");
+          
+          // Send init message
+          const initMessage = {
+            type: "init",
+            domain: domain || "Technical",
+            user_id: user?.id || null,
+            persona_id: personaId || null,
+            position: personaData?.position || "",
+            company_name: personaData?.company_name || "",
+            company_description: personaData?.company_description || "",
+            job_description: personaData?.job_description || "",
+            resume_text: personaData?.resume_text || "",
+            resume_filename: personaData?.resume_filename || "",
+            custom_style_prompt: settings.custom_style_prompt || null,
+            settings: {
+              audioLanguage: settings.audioLanguage || "English",
+              pauseInterval: settings.pauseInterval || 2.0,
+              advancedQuestionDetection: settings.advancedQuestionDetection !== false,
+              selectedResponseStyleId: settings.selectedResponseStyleId || "concise",
+              responseStyle: settings.responseStyle || "professional",
+              defaultModel: settings.defaultModel || "gpt-4o-mini",
+              programmingLanguage: settings.programmingLanguage || "Python",
+              interviewInstructions: settings.interviewInstructions || "",
+              messageDirection: settings.messageDirection || "bottom",
+              autoScroll: settings.autoScroll !== false
+            }
+          };
+
+          reconnectingQaWsRef.current?.send(initMessage);
+          resolve(reconnectingQaWsRef.current);
+        } else if (status === "reconnecting") {
+          setQaStatus("🔄 Reconnecting...");
+        } else if (status === "disconnected") {
+          setQaStatus("Disconnected");
+        }
       };
 
-      ws.onclose = () => {
-        console.log("🔌 Q&A closed");
-        setQaStatus("Disconnected");
-      };
+      reconnectingQaWsRef.current = new ReconnectingWebSocket(
+        qaUrl,
+        handleMessage,
+        handleStatusChange,
+        5 // max retries
+      );
 
-      qaWsRef.current = ws;
+      reconnectingQaWsRef.current.connect().catch(reject);
+      
+      // Store reference for compatibility
+      qaWsRef.current = reconnectingQaWsRef.current.ws;
     });
   };
 
   const stopQA = () => {
-    if (qaWsRef.current) {
-      qaWsRef.current.close();
-      qaWsRef.current = null;
+    if (reconnectingQaWsRef.current) {
+      reconnectingQaWsRef.current.close();
+      reconnectingQaWsRef.current = null;
     }
+    qaWsRef.current = null;
     console.log('✓ Q&A stopped');
   };
 
@@ -774,31 +888,21 @@ export default function InterviewAssist() {
     });
   };
 
-  // ✅ CRITICAL FIX: Microphone FIRST, then Deepgram connection
   const startRecording = async () => {
     try {
       setTabAudioError("");
 
-      // ✅ STEP 1: Start microphone FIRST and wait for it to be ready
-      console.log("🎤 Starting microphone...");
-      await startMicrophoneCapture();
-
-      // ✅ STEP 2: THEN connect to Deepgram (audio is already flowing)
-      console.log("🌐 Connecting to Deepgram...");
       await connectDeepgram();
-
-      // ✅ STEP 3: Show tab selection modal
+      await startMicrophoneCapture();
       setShowTabModal(true);
 
-      // ✅ STEP 4: Connect to Q&A service
-      console.log("🤖 Connecting to Q&A...");
       await connectQA();
 
       setIsRecording(true);
       setDeepgramStatus("🎤 Recording (Select Tab)");
       setQaStatus("🤖 Q&A Active");
     } catch (err) {
-      console.error('❌ Failed to start:', err);
+      console.error('Failed to start:', err);
       stopDeepgramCapture();
       stopQA();
       setIsRecording(false);
