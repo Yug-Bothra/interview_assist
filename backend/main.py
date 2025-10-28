@@ -1,12 +1,12 @@
 """
 ===============================================================================
-INTERVIEW ASSISTANT BACKEND - RENDER PRODUCTION VERSION
+INTERVIEW ASSISTANT BACKEND - RENDER PRODUCTION VERSION (FIXED)
 ===============================================================================
 Audio capture: 100% browser-based (no server audio devices needed)
 LEFT PANEL: Deepgram dual-stream transcription display
-RIGHT PANEL: Q&A with Deepgram transcripts (no Whisper, no audio_utils.py)
+RIGHT PANEL: Q&A with Deepgram transcripts
 
-Render-optimized: Direct environment variable loading, WebSocket-ready
+Fixed: WebSocket connections now stay open properly
 ===============================================================================
 """
 
@@ -33,8 +33,6 @@ from websockets.exceptions import ConnectionClosed
 # ============================================================================
 # ENVIRONMENT VARIABLES - RENDER COMPATIBLE
 # ============================================================================
-# NOTE: Render automatically loads environment variables from dashboard
-# No need for python-dotenv or .env files in production
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
@@ -42,7 +40,6 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 PORT = int(os.getenv("PORT", 8000))
 
-# Validate critical environment variables
 if not DEEPGRAM_API_KEY:
     print("⚠️ WARNING: DEEPGRAM_API_KEY not found in environment variables")
 
@@ -59,7 +56,7 @@ else:
 app = FastAPI(
     title="Interview Assistant API - Render Production",
     description="Real-time interview assistance with Deepgram transcription and OpenAI Q&A",
-    version="2.0.0"
+    version="2.0.1"
 )
 
 app.add_middleware(
@@ -471,7 +468,7 @@ CANDIDATE CONTEXT:
 
 
 # ============================================================================
-# WEBSOCKET HANDLERS
+# WEBSOCKET HANDLERS (FIXED VERSION)
 # ============================================================================
 
 @app.websocket("/ws/dual-transcribe")
@@ -479,6 +476,7 @@ async def websocket_dual_transcribe(websocket: WebSocket):
     """
     Deepgram dual-stream transcription for LEFT PANEL
     Handles both interviewer and candidate audio streams
+    FIXED: Properly keeps connection open
     """
     await websocket.accept()
     print("\n🎙️ Deepgram dual-transcribe connected")
@@ -496,7 +494,7 @@ async def websocket_dual_transcribe(websocket: WebSocket):
             try:
                 while stream_manager.is_active:
                     try:
-                        message = await asyncio.wait_for(websocket.receive_text(), timeout=0.1)
+                        message = await asyncio.wait_for(websocket.receive_text(), timeout=0.5)
                         data = json.loads(message)
                         
                         stream_type = data.get("type")
@@ -521,61 +519,81 @@ async def websocket_dual_transcribe(websocket: WebSocket):
                         elif stream_type == "interviewer":
                             await stream_manager.interviewer_stream.send_audio(audio_bytes)
                     except asyncio.TimeoutError:
+                        # Normal timeout, continue waiting
                         continue
+                    except Exception as e:
+                        print(f"❌ Audio receive error: {e}")
+                        break
             except Exception as e:
                 print(f"❌ Audio handling error: {e}")
+                import traceback
+                traceback.print_exc()
         
         async def handle_transcripts():
             """Receive transcripts from Deepgram and forward to frontend"""
             async def process_stream(stream: DeepgramStream):
                 try:
                     while stream_manager.is_active and stream.state == ConnectionState.CONNECTED:
-                        transcript_data = await stream.receive_transcripts()
-                        
-                        if not transcript_data:
-                            await asyncio.sleep(0.01)
-                            continue
-                        
-                        if transcript_data.get("type") == "Results":
-                            channel = transcript_data.get("channel", {})
-                            alternatives = channel.get("alternatives", [])
+                        try:
+                            transcript_data = await stream.receive_transcripts()
                             
-                            if alternatives and len(alternatives) > 0:
-                                transcript = alternatives[0].get("transcript", "")
+                            if not transcript_data:
+                                await asyncio.sleep(0.01)
+                                continue
+                            
+                            if transcript_data.get("type") == "Results":
+                                channel = transcript_data.get("channel", {})
+                                alternatives = channel.get("alternatives", [])
                                 
-                                if transcript.strip():
-                                    response = {
-                                        "type": "transcript",
-                                        "stream": stream.stream_type.value,
-                                        "transcript": transcript,
-                                        "is_final": transcript_data.get("is_final", False),
-                                        "speech_final": transcript_data.get("speech_final", False)
-                                    }
-                                    await websocket.send_json(response)
+                                if alternatives and len(alternatives) > 0:
+                                    transcript = alternatives[0].get("transcript", "")
+                                    
+                                    if transcript.strip():
+                                        response = {
+                                            "type": "transcript",
+                                            "stream": stream.stream_type.value,
+                                            "transcript": transcript,
+                                            "is_final": transcript_data.get("is_final", False),
+                                            "speech_final": transcript_data.get("speech_final", False)
+                                        }
+                                        await websocket.send_json(response)
+                        except Exception as e:
+                            print(f"❌ Stream receive error ({stream.stream_type.value}): {e}")
+                            await asyncio.sleep(0.1)
                 except Exception as e:
-                    print(f"❌ Stream processing error: {e}")
+                    print(f"❌ Stream processing error ({stream.stream_type.value}): {e}")
+                    import traceback
+                    traceback.print_exc()
             
+            try:
+                await asyncio.gather(
+                    process_stream(stream_manager.candidate_stream),
+                    process_stream(stream_manager.interviewer_stream),
+                    return_exceptions=True
+                )
+            except Exception as e:
+                print(f"❌ Transcript gathering error: {e}")
+        
+        # Run both handlers concurrently - wait for BOTH to complete
+        try:
             await asyncio.gather(
-                process_stream(stream_manager.candidate_stream),
-                process_stream(stream_manager.interviewer_stream),
-                return_exceptions=True
+                handle_audio(),
+                handle_transcripts(),
+                return_exceptions=False
             )
-        
-        # Run both handlers concurrently
-        audio_task = asyncio.create_task(handle_audio())
-        transcript_task = asyncio.create_task(handle_transcripts())
-        
-        done, pending = await asyncio.wait(
-            [audio_task, transcript_task],
-            return_when=asyncio.FIRST_COMPLETED
-        )
-        
-        for task in pending:
-            task.cancel()
+        except Exception as e:
+            print(f"❌ Handler error: {e}")
+            import traceback
+            traceback.print_exc()
     
+    except WebSocketDisconnect:
+        print("❌ Deepgram client disconnected")
     except Exception as e:
         print(f"❌ Deepgram dual-transcribe error: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
+        stream_manager.is_active = False
         await stream_manager.close_all()
         try:
             await websocket.close()
@@ -589,26 +607,15 @@ async def websocket_live_interview(websocket: WebSocket):
     """
     Q&A Copilot for RIGHT PANEL
     Processes Deepgram transcripts from frontend and generates answers
+    FIXED: Properly keeps connection open
     """
     await websocket.accept()
     print("\n🤖 Q&A Copilot connected")
     
-    connection_state = ConnectionState.CONNECTED
-    state_lock = asyncio.Lock()
-    
-    async def get_state():
-        async with state_lock:
-            return connection_state
-    
-    async def set_state(new_state: ConnectionState):
-        nonlocal connection_state
-        async with state_lock:
-            connection_state = new_state
-    
+    connection_active = True
     transcript_accumulator = None
     prev_questions = deque(maxlen=10)
     processing_lock = asyncio.Lock()
-    send_lock = asyncio.Lock()
     
     settings = {
         "audioLanguage": "English",
@@ -625,23 +632,10 @@ async def websocket_live_interview(websocket: WebSocket):
     persona_data = None
     custom_style_prompt = None
     
-    async def safe_send(data: dict) -> bool:
-        """Thread-safe WebSocket send with state checking"""
-        state = await get_state()
-        if state != ConnectionState.CONNECTED:
-            return False
-        try:
-            async with send_lock:
-                await websocket.send_json(data)
-            return True
-        except Exception:
-            await set_state(ConnectionState.DISCONNECTING)
-            return False
-    
     try:
-        await safe_send({"type": "ready", "message": "Q&A ready"})
+        await websocket.send_json({"type": "ready", "message": "Q&A ready"})
         
-        while await get_state() == ConnectionState.CONNECTED:
+        while connection_active:
             try:
                 message = await asyncio.wait_for(websocket.receive_text(), timeout=2.0)
                 data = json.loads(message)
@@ -674,7 +668,7 @@ async def websocket_live_interview(websocket: WebSocket):
                     print(f"🤖 Model: {settings.get('defaultModel', DEFAULT_MODEL)}")
                     print("=" * 60)
                     
-                    await safe_send({"type": "connected", "message": "Q&A initialized"})
+                    await websocket.send_json({"type": "connected", "message": "Q&A initialized"})
                 
                 elif data.get("type") == "transcript":
                     # Process incoming transcript
@@ -719,14 +713,14 @@ async def websocket_live_interview(websocket: WebSocket):
                                 print(f"❓ Question: {result['question']}")
                                 print(f"💬 Answer: {result['answer'][:100]}...")
                                 
-                                await safe_send({
+                                await websocket.send_json({
                                     "type": "question_detected",
                                     "question": result["question"]
                                 })
                                 
                                 await asyncio.sleep(0.1)
                                 
-                                await safe_send({
+                                await websocket.send_json({
                                     "type": "answer_ready",
                                     "question": result["question"],
                                     "answer": result["answer"]
@@ -735,7 +729,7 @@ async def websocket_live_interview(websocket: WebSocket):
                                 print("⏭️  No question detected")
                 
                 elif data.get("type") == "ping":
-                    await safe_send({"type": "pong"})
+                    await websocket.send_json({"type": "pong"})
                     
             except asyncio.TimeoutError:
                 # Check for force completion on timeout
@@ -761,28 +755,29 @@ async def websocket_live_interview(websocket: WebSocket):
                                     if result["has_question"]:
                                         prev_questions.append(complete_paragraph)
                                         
-                                        await safe_send({
+                                        await websocket.send_json({
                                             "type": "question_detected",
                                             "question": result["question"]
                                         })
                                         
                                         await asyncio.sleep(0.1)
                                         
-                                        await safe_send({
+                                        await websocket.send_json({
                                             "type": "answer_ready",
                                             "question": result["question"],
                                             "answer": result["answer"]
                                         })
+                # Normal timeout, continue
                 continue
 
     except WebSocketDisconnect:
-        print("❌ Q&A disconnected")
+        print("❌ Q&A client disconnected")
     except Exception as e:
         print(f"❌ Q&A error: {e}")
         import traceback
         traceback.print_exc()
     finally:
-        await set_state(ConnectionState.DISCONNECTED)
+        connection_active = False
         try:
             await websocket.close()
         except:
@@ -799,7 +794,7 @@ async def root():
     """Root endpoint with API information"""
     return {
         "service": "Interview Assistant API",
-        "version": "2.0.0",
+        "version": "2.0.1",
         "status": "running",
         "endpoints": {
             "health": "/health",
@@ -877,7 +872,7 @@ async def get_model_status():
 async def startup_event():
     """Run on application startup"""
     print("\n" + "=" * 80)
-    print("🚀 INTERVIEW ASSISTANT BACKEND - RENDER PRODUCTION")
+    print("🚀 INTERVIEW ASSISTANT BACKEND - RENDER PRODUCTION v2.0.1")
     print("=" * 80)
     print(f"✅ Port: {PORT}")
     print(f"✅ Audio capture: Browser-based (100%)")
@@ -886,8 +881,8 @@ async def startup_event():
     print(f"✅ Supabase: {'Configured' if SUPABASE_URL and SUPABASE_KEY else 'Not configured'}")
     print("=" * 80)
     print("📡 WebSocket Endpoints:")
-    print("   • wss://your-domain.onrender.com/ws/dual-transcribe?language=en")
-    print("   • wss://your-domain.onrender.com/ws/live-interview")
+    print("   • /ws/dual-transcribe?language=en")
+    print("   • /ws/live-interview")
     print("=" * 80 + "\n")
 
 
