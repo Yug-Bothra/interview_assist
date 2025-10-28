@@ -1,18 +1,9 @@
 """
-===============================================================================
-INTERVIEW ASSISTANT BACKEND - RENDER PRODUCTION VERSION (FIXED)
-===============================================================================
+Render-Compatible Interview Assistant Backend - FIXED
 Audio capture: 100% browser-based (no server audio devices needed)
 LEFT PANEL: Deepgram dual-stream transcription display
-RIGHT PANEL: Q&A with Deepgram transcripts
-
-Fixed: WebSocket connections now stay open properly
-===============================================================================
+RIGHT PANEL: Q&A with Deepgram transcripts (no Whisper, no audio_utils.py)
 """
-
-# ============================================================================
-# IMPORTS
-# ============================================================================
 
 import asyncio
 import json
@@ -25,39 +16,20 @@ from difflib import SequenceMatcher
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
 import openai
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-
-# ============================================================================
-# ENVIRONMENT VARIABLES - RENDER COMPATIBLE
-# ============================================================================
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+# Load environment variables
+load_dotenv()
+openai.api_key = os.getenv("OPENAI_API_KEY")
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-PORT = int(os.getenv("PORT", 8000))
 
 if not DEEPGRAM_API_KEY:
-    print("⚠️ WARNING: DEEPGRAM_API_KEY not found in environment variables")
+    raise ValueError("❌ DEEPGRAM_API_KEY not found")
 
-if not OPENAI_API_KEY:
-    print("⚠️ WARNING: OPENAI_API_KEY not found in environment variables")
-else:
-    openai.api_key = OPENAI_API_KEY
-
-
-# ============================================================================
-# FASTAPI APPLICATION SETUP
-# ============================================================================
-
-app = FastAPI(
-    title="Interview Assistant API - Render Production",
-    description="Real-time interview assistance with Deepgram transcription and OpenAI Q&A",
-    version="2.0.1"
-)
+app = FastAPI(title="Interview Assistant API - Render Compatible")
 
 app.add_middleware(
     CORSMiddleware,
@@ -67,29 +39,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 # ============================================================================
-# CONFIGURATION CONSTANTS
+# CONFIGURATION
 # ============================================================================
 
 DEFAULT_MODEL = "gpt-4o-mini"
-KEEPALIVE_INTERVAL = 5
-
+KEEPALIVE_INTERVAL = 5  # Send every 5 seconds (well under 10s timeout)
 
 class ConnectionState(Enum):
-    """WebSocket connection states"""
     DISCONNECTED = "disconnected"
     CONNECTING = "connecting"
     CONNECTED = "connected"
     DISCONNECTING = "disconnecting"
-
 
 # ============================================================================
 # DEEPGRAM CONFIGURATION
 # ============================================================================
 
 def get_deepgram_url(language="en"):
-    """Generate Deepgram WebSocket URL with optimal parameters"""
     return (
         f"wss://api.deepgram.com/v1/listen"
         f"?model=nova-2"
@@ -106,16 +73,11 @@ def get_deepgram_url(language="en"):
         f"&profanity_filter=false"
     )
 
-
 class StreamType(Enum):
-    """Audio stream types for dual transcription"""
     CANDIDATE = "candidate"
     INTERVIEWER = "interviewer"
 
-
 class DeepgramStream:
-    """Manages a single Deepgram WebSocket connection with automatic reconnection"""
-    
     def __init__(self, api_key: str, stream_type: StreamType, language: str = "en"):
         self.api_key = api_key
         self.stream_type = stream_type
@@ -125,10 +87,14 @@ class DeepgramStream:
         self.is_closing = False
         self.state = ConnectionState.DISCONNECTED
         self.max_retries = 3
+        self.state_lock = asyncio.Lock()  # ✅ FIX: Add lock for state management
         
     async def connect(self) -> None:
-        """Connect to Deepgram with retry logic"""
-        self.state = ConnectionState.CONNECTING
+        async with self.state_lock:
+            if self.state != ConnectionState.DISCONNECTED:
+                print(f"⚠️ Already connecting/connected ({self.stream_type.value})")
+                return
+            self.state = ConnectionState.CONNECTING
         
         for attempt in range(self.max_retries):
             try:
@@ -136,65 +102,93 @@ class DeepgramStream:
                 self.ws = await websockets.connect(
                     url,
                     extra_headers={"Authorization": f"Token {self.api_key}"},
-                    ping_interval=None,
+                    ping_interval=20,  # ✅ FIX: Enable ping/pong
+                    ping_timeout=10,
                     max_size=10_000_000,
                     close_timeout=5
                 )
                 
-                self.state = ConnectionState.CONNECTED
+                async with self.state_lock:
+                    self.state = ConnectionState.CONNECTED
                 emoji = "🎤" if self.stream_type == StreamType.CANDIDATE else "💻"
                 print(f"{emoji} Deepgram connected ({self.stream_type.value})")
+                
+                # ✅ FIX: Start KeepAlive only after successful connection
+                self.keepalive_task = asyncio.create_task(self.send_keepalive())
                 return
+                
             except Exception as e:
-                print(f"❌ Deepgram attempt {attempt + 1} failed: {e}")
+                print(f"❌ Deepgram attempt {attempt + 1} failed ({self.stream_type.value}): {e}")
                 if attempt < self.max_retries - 1:
                     await asyncio.sleep(1 * (attempt + 1))
                 else:
-                    self.state = ConnectionState.DISCONNECTED
+                    async with self.state_lock:
+                        self.state = ConnectionState.DISCONNECTED
                     raise
     
     async def send_keepalive(self) -> None:
-        """Send periodic keepalive messages to maintain connection"""
+        """Send KeepAlive messages every 5 seconds to prevent 10s timeout"""
         try:
-            while not self.is_closing and self.ws and self.state == ConnectionState.CONNECTED:
-                await asyncio.sleep(KEEPALIVE_INTERVAL)
-                if self.ws and not self.is_closing:
-                    try:
-                        await self.ws.send(json.dumps({"type": "KeepAlive"}))
-                    except Exception:
+            while True:
+                async with self.state_lock:
+                    if self.is_closing or self.state != ConnectionState.CONNECTED:
                         break
+                
+                await asyncio.sleep(KEEPALIVE_INTERVAL)
+                
+                async with self.state_lock:
+                    if self.is_closing or not self.ws:
+                        break
+                
+                try:
+                    await self.ws.send(json.dumps({"type": "KeepAlive"}))
+                    # print(f"💓 KeepAlive sent ({self.stream_type.value})")  # Optional: comment out for less noise
+                except Exception as e:
+                    print(f"❌ KeepAlive failed ({self.stream_type.value}): {e}")
+                    break
+                    
         except asyncio.CancelledError:
-            pass
+            print(f"⏹️ KeepAlive cancelled ({self.stream_type.value})")
+        except Exception as e:
+            print(f"❌ KeepAlive error ({self.stream_type.value}): {e}")
     
     async def send_audio(self, audio_data: bytes) -> bool:
-        """Send audio data to Deepgram"""
-        if not self.ws or self.is_closing or self.state != ConnectionState.CONNECTED:
-            return False
+        async with self.state_lock:
+            if not self.ws or self.is_closing or self.state != ConnectionState.CONNECTED:
+                return False
+        
         try:
-            await self.ws.send(audio_data)
+            await self.ws.send(audio_data)  # ✅ FIX: Send as bytes, not JSON
             return True
-        except Exception:
+        except Exception as e:
+            print(f"❌ Audio send failed ({self.stream_type.value}): {e}")
             return False
     
     async def receive_transcripts(self) -> Optional[dict]:
-        """Receive transcript results from Deepgram"""
-        if not self.ws or self.state != ConnectionState.CONNECTED:
-            return None
+        async with self.state_lock:
+            if not self.ws or self.state != ConnectionState.CONNECTED:
+                return None
+        
         try:
             message = await asyncio.wait_for(self.ws.recv(), timeout=0.1)
             return json.loads(message)
-        except (asyncio.TimeoutError, ConnectionClosed):
+        except asyncio.TimeoutError:
             return None
-        except Exception:
+        except ConnectionClosed as e:
+            print(f"🔌 Connection closed ({self.stream_type.value}): code={e.code}, reason={e.reason}")
+            return None
+        except Exception as e:
+            print(f"❌ Receive error ({self.stream_type.value}): {e}")
             return None
     
     async def close(self) -> None:
-        """Gracefully close the Deepgram connection"""
-        if self.is_closing:
-            return
-        self.is_closing = True
-        self.state = ConnectionState.DISCONNECTING
+        async with self.state_lock:
+            if self.is_closing:
+                return
+            self.is_closing = True
+            self.state = ConnectionState.DISCONNECTING
         
+        # Cancel KeepAlive task
         if self.keepalive_task and not self.keepalive_task.done():
             self.keepalive_task.cancel()
             try:
@@ -202,38 +196,29 @@ class DeepgramStream:
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
         
+        # Close WebSocket
         if self.ws:
             try:
                 await self.ws.send(json.dumps({"type": "CloseStream"}))
                 await asyncio.sleep(0.1)
                 await asyncio.wait_for(self.ws.close(), timeout=2.0)
-            except Exception:
-                pass
-        self.state = ConnectionState.DISCONNECTED
-
+            except Exception as e:
+                print(f"⚠️ Close error ({self.stream_type.value}): {e}")
+        
+        async with self.state_lock:
+            self.state = ConnectionState.DISCONNECTED
 
 class DualStreamManager:
-    """Manages both candidate and interviewer Deepgram streams"""
-    
     def __init__(self, api_key: str, language: str = "en"):
         self.candidate_stream = DeepgramStream(api_key, StreamType.CANDIDATE, language)
         self.interviewer_stream = DeepgramStream(api_key, StreamType.INTERVIEWER, language)
         self.is_active = False
         
     async def connect_all(self) -> None:
-        """Connect both streams simultaneously"""
         try:
-            await asyncio.gather(
-                self.candidate_stream.connect(),
-                self.interviewer_stream.connect()
-            )
-            
-            self.candidate_stream.keepalive_task = asyncio.create_task(
-                self.candidate_stream.send_keepalive()
-            )
-            self.interviewer_stream.keepalive_task = asyncio.create_task(
-                self.interviewer_stream.send_keepalive()
-            )
+            # ✅ FIX: Connect streams sequentially to avoid race conditions
+            await self.candidate_stream.connect()
+            await self.interviewer_stream.connect()
             
             self.is_active = True
             print("✅ Deepgram streams ready")
@@ -243,14 +228,12 @@ class DualStreamManager:
             raise
     
     async def close_all(self) -> None:
-        """Close both streams gracefully"""
         self.is_active = False
         await asyncio.gather(
             self.candidate_stream.close(),
             self.interviewer_stream.close(),
             return_exceptions=True
         )
-
 
 # ============================================================================
 # TRANSCRIPT ACCUMULATOR FOR Q&A
@@ -321,9 +304,8 @@ class TranscriptAccumulator:
             return complete_text
         return None
 
-
 # ============================================================================
-# Q&A PROCESSING WITH OPENAI
+# Q&A PROCESSING
 # ============================================================================
 
 RESPONSE_STYLES = {
@@ -386,14 +368,12 @@ Response format:
 CRITICAL: Do NOT rephrase or rewrite the question. Extract it EXACTLY as spoken.
 """
 
-
 async def process_transcript_with_ai(
     transcript: str,
     settings: Dict[str, Any],
     persona_data: Optional[Dict] = None,
     custom_style_prompt: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Process transcript with OpenAI to detect questions and generate answers"""
     try:
         response_style_id = settings.get("selectedResponseStyleId", "concise")
         
@@ -466,20 +446,15 @@ CANDIDATE CONTEXT:
         print(f"❌ AI error: {e}")
         return {"has_question": False, "question": None, "answer": None}
 
-
 # ============================================================================
-# WEBSOCKET HANDLERS (FIXED VERSION)
+# WEBSOCKET: DEEPGRAM DUAL-STREAM (LEFT PANEL)
 # ============================================================================
 
 @app.websocket("/ws/dual-transcribe")
 async def websocket_dual_transcribe(websocket: WebSocket):
-    """
-    Deepgram dual-stream transcription for LEFT PANEL
-    Handles both interviewer and candidate audio streams
-    FIXED: Properly keeps connection open
-    """
+    """Deepgram display for Interviewer + Candidate"""
     await websocket.accept()
-    print("\n🎙️ Deepgram dual-transcribe connected")
+    print("\n🎙️ Deepgram connection accepted")
     
     language = websocket.query_params.get("language", "en")
     stream_manager = DualStreamManager(DEEPGRAM_API_KEY, language)
@@ -490,11 +465,10 @@ async def websocket_dual_transcribe(websocket: WebSocket):
         await websocket.send_json({"type": "connected", "message": "Deepgram streams ready"})
         
         async def handle_audio():
-            """Receive audio from frontend and route to appropriate Deepgram stream"""
             try:
                 while stream_manager.is_active:
                     try:
-                        message = await asyncio.wait_for(websocket.receive_text(), timeout=0.5)
+                        message = await asyncio.wait_for(websocket.receive_text(), timeout=0.1)
                         data = json.loads(message)
                         
                         stream_type = data.get("type")
@@ -503,7 +477,7 @@ async def websocket_dual_transcribe(websocket: WebSocket):
                         if not audio_data or not stream_type:
                             continue
                         
-                        # Convert audio data to bytes
+                        # ✅ FIX: Convert array to bytes properly
                         if isinstance(audio_data, list):
                             import struct
                             audio_bytes = struct.pack(f'{len(audio_data)}h', *audio_data)
@@ -513,109 +487,122 @@ async def websocket_dual_transcribe(websocket: WebSocket):
                         else:
                             audio_bytes = audio_data
                         
-                        # Route to appropriate stream
                         if stream_type == "candidate":
-                            await stream_manager.candidate_stream.send_audio(audio_bytes)
+                            success = await stream_manager.candidate_stream.send_audio(audio_bytes)
+                            if not success:
+                                print("⚠️ Candidate audio send failed")
                         elif stream_type == "interviewer":
-                            await stream_manager.interviewer_stream.send_audio(audio_bytes)
+                            success = await stream_manager.interviewer_stream.send_audio(audio_bytes)
+                            if not success:
+                                print("⚠️ Interviewer audio send failed")
+                                
                     except asyncio.TimeoutError:
-                        # Normal timeout, continue waiting
                         continue
                     except Exception as e:
-                        print(f"❌ Audio receive error: {e}")
-                        break
+                        print(f"❌ Audio processing error: {e}")
             except Exception as e:
-                print(f"❌ Audio handling error: {e}")
-                import traceback
-                traceback.print_exc()
+                print(f"❌ Audio handler error: {e}")
         
         async def handle_transcripts():
-            """Receive transcripts from Deepgram and forward to frontend"""
             async def process_stream(stream: DeepgramStream):
                 try:
-                    while stream_manager.is_active and stream.state == ConnectionState.CONNECTED:
-                        try:
-                            transcript_data = await stream.receive_transcripts()
-                            
-                            if not transcript_data:
-                                await asyncio.sleep(0.01)
+                    while stream_manager.is_active:
+                        async with stream.state_lock:
+                            if stream.state != ConnectionState.CONNECTED:
+                                await asyncio.sleep(0.1)
                                 continue
+                        
+                        transcript_data = await stream.receive_transcripts()
+                        
+                        if not transcript_data:
+                            await asyncio.sleep(0.01)
+                            continue
+                        
+                        # ✅ FIX: Log metadata events for debugging
+                        if transcript_data.get("type") == "Metadata":
+                            print(f"📋 Metadata ({stream.stream_type.value}): {transcript_data}")
+                            continue
+                        
+                        if transcript_data.get("type") == "Results":
+                            channel = transcript_data.get("channel", {})
+                            alternatives = channel.get("alternatives", [])
                             
-                            if transcript_data.get("type") == "Results":
-                                channel = transcript_data.get("channel", {})
-                                alternatives = channel.get("alternatives", [])
+                            if alternatives and len(alternatives) > 0:
+                                transcript = alternatives[0].get("transcript", "")
                                 
-                                if alternatives and len(alternatives) > 0:
-                                    transcript = alternatives[0].get("transcript", "")
-                                    
-                                    if transcript.strip():
-                                        response = {
-                                            "type": "transcript",
-                                            "stream": stream.stream_type.value,
-                                            "transcript": transcript,
-                                            "is_final": transcript_data.get("is_final", False),
-                                            "speech_final": transcript_data.get("speech_final", False)
-                                        }
+                                if transcript.strip():
+                                    response = {
+                                        "type": "transcript",
+                                        "stream": stream.stream_type.value,
+                                        "transcript": transcript,
+                                        "is_final": transcript_data.get("is_final", False),
+                                        "speech_final": transcript_data.get("speech_final", False)
+                                    }
+                                    try:
                                         await websocket.send_json(response)
-                        except Exception as e:
-                            print(f"❌ Stream receive error ({stream.stream_type.value}): {e}")
-                            await asyncio.sleep(0.1)
+                                    except Exception as e:
+                                        print(f"❌ Failed to send transcript: {e}")
+                                        break
                 except Exception as e:
                     print(f"❌ Stream processing error ({stream.stream_type.value}): {e}")
-                    import traceback
-                    traceback.print_exc()
             
-            try:
-                await asyncio.gather(
-                    process_stream(stream_manager.candidate_stream),
-                    process_stream(stream_manager.interviewer_stream),
-                    return_exceptions=True
-                )
-            except Exception as e:
-                print(f"❌ Transcript gathering error: {e}")
-        
-        # Run both handlers concurrently - wait for BOTH to complete
-        try:
             await asyncio.gather(
-                handle_audio(),
-                handle_transcripts(),
-                return_exceptions=False
+                process_stream(stream_manager.candidate_stream),
+                process_stream(stream_manager.interviewer_stream),
+                return_exceptions=True
             )
-        except Exception as e:
-            print(f"❌ Handler error: {e}")
-            import traceback
-            traceback.print_exc()
+        
+        audio_task = asyncio.create_task(handle_audio())
+        transcript_task = asyncio.create_task(handle_transcripts())
+        
+        done, pending = await asyncio.wait(
+            [audio_task, transcript_task],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+        
+        for task in pending:
+            task.cancel()
     
     except WebSocketDisconnect:
-        print("❌ Deepgram client disconnected")
+        print("❌ Frontend disconnected")
     except Exception as e:
-        print(f"❌ Deepgram dual-transcribe error: {e}")
+        print(f"❌ Deepgram WebSocket error: {e}")
         import traceback
         traceback.print_exc()
     finally:
-        stream_manager.is_active = False
         await stream_manager.close_all()
         try:
             await websocket.close()
         except:
             pass
-        print("🔌 Deepgram dual-transcribe closed\n")
+        print("🔌 Deepgram connection closed\n")
 
+# ============================================================================
+# WEBSOCKET: Q&A WITH DEEPGRAM TRANSCRIPTS (RIGHT PANEL)
+# ============================================================================
 
 @app.websocket("/ws/live-interview")
 async def websocket_live_interview(websocket: WebSocket):
-    """
-    Q&A Copilot for RIGHT PANEL
-    Processes Deepgram transcripts from frontend and generates answers
-    FIXED: Properly keeps connection open
-    """
+    """Q&A Copilot - processes Deepgram transcripts from frontend"""
     await websocket.accept()
     print("\n🤖 Q&A Copilot connected")
     
-    connection_active = True
+    connection_state = ConnectionState.CONNECTED
+    state_lock = asyncio.Lock()
+    
+    async def get_state():
+        async with state_lock:
+            return connection_state
+    
+    async def set_state(new_state: ConnectionState):
+        nonlocal connection_state
+        async with state_lock:
+            connection_state = new_state
+    
     transcript_accumulator = None
     prev_questions = deque(maxlen=10)
     processing_lock = asyncio.Lock()
+    send_lock = asyncio.Lock()
     
     settings = {
         "audioLanguage": "English",
@@ -632,16 +619,27 @@ async def websocket_live_interview(websocket: WebSocket):
     persona_data = None
     custom_style_prompt = None
     
+    async def safe_send(data: dict) -> bool:
+        state = await get_state()
+        if state != ConnectionState.CONNECTED:
+            return False
+        try:
+            async with send_lock:
+                await websocket.send_json(data)
+            return True
+        except Exception:
+            await set_state(ConnectionState.DISCONNECTING)
+            return False
+    
     try:
-        await websocket.send_json({"type": "ready", "message": "Q&A ready"})
+        await safe_send({"type": "ready", "message": "Q&A ready"})
         
-        while connection_active:
+        while await get_state() == ConnectionState.CONNECTED:
             try:
                 message = await asyncio.wait_for(websocket.receive_text(), timeout=2.0)
                 data = json.loads(message)
                 
                 if data.get("type") == "init":
-                    # Initialize session settings
                     received_settings = data.get("settings", {})
                     settings.update(received_settings)
                     
@@ -661,17 +659,16 @@ async def websocket_live_interview(websocket: WebSocket):
                     custom_style_prompt = data.get("custom_style_prompt", None)
                     
                     print("=" * 60)
-                    print("🎯 Q&A COPILOT INITIALIZED")
+                    print("🎯 Q&A INITIALIZED")
                     print("=" * 60)
                     print(f"⏱️  Pause threshold: {transcript_accumulator.pause_threshold}s")
                     print(f"📋 Position: {persona_data['position']}")
                     print(f"🤖 Model: {settings.get('defaultModel', DEFAULT_MODEL)}")
                     print("=" * 60)
                     
-                    await websocket.send_json({"type": "connected", "message": "Q&A initialized"})
+                    await safe_send({"type": "connected", "message": "Q&A initialized"})
                 
                 elif data.get("type") == "transcript":
-                    # Process incoming transcript
                     if not transcript_accumulator:
                         continue
                     
@@ -694,7 +691,6 @@ async def websocket_live_interview(websocket: WebSocket):
                             print(f"\n📝 Complete paragraph detected:")
                             print(f"   {complete_paragraph[:100]}...")
                             
-                            # Check for duplicates
                             if any(complete_paragraph.lower() == prev.lower() for prev in prev_questions):
                                 print("⏭️  Duplicate question skipped")
                                 continue
@@ -713,14 +709,14 @@ async def websocket_live_interview(websocket: WebSocket):
                                 print(f"❓ Question: {result['question']}")
                                 print(f"💬 Answer: {result['answer'][:100]}...")
                                 
-                                await websocket.send_json({
+                                await safe_send({
                                     "type": "question_detected",
                                     "question": result["question"]
                                 })
                                 
                                 await asyncio.sleep(0.1)
                                 
-                                await websocket.send_json({
+                                await safe_send({
                                     "type": "answer_ready",
                                     "question": result["question"],
                                     "answer": result["answer"]
@@ -729,10 +725,9 @@ async def websocket_live_interview(websocket: WebSocket):
                                 print("⏭️  No question detected")
                 
                 elif data.get("type") == "ping":
-                    await websocket.send_json({"type": "pong"})
+                    await safe_send({"type": "pong"})
                     
             except asyncio.TimeoutError:
-                # Check for force completion on timeout
                 if transcript_accumulator and transcript_accumulator.current_paragraph:
                     current_time = time.time()
                     time_since_last = current_time - transcript_accumulator.last_speech_time
@@ -755,150 +750,73 @@ async def websocket_live_interview(websocket: WebSocket):
                                     if result["has_question"]:
                                         prev_questions.append(complete_paragraph)
                                         
-                                        await websocket.send_json({
+                                        await safe_send({
                                             "type": "question_detected",
                                             "question": result["question"]
                                         })
                                         
                                         await asyncio.sleep(0.1)
                                         
-                                        await websocket.send_json({
+                                        await safe_send({
                                             "type": "answer_ready",
                                             "question": result["question"],
                                             "answer": result["answer"]
                                         })
-                # Normal timeout, continue
                 continue
 
     except WebSocketDisconnect:
-        print("❌ Q&A client disconnected")
+        print("❌ Q&A disconnected")
     except Exception as e:
         print(f"❌ Q&A error: {e}")
         import traceback
         traceback.print_exc()
     finally:
-        connection_active = False
+        await set_state(ConnectionState.DISCONNECTED)
         try:
             await websocket.close()
         except:
             pass
         print("🔌 Q&A closed\n")
 
-
 # ============================================================================
-# REST API ENDPOINTS
+# API ENDPOINTS
 # ============================================================================
-
-@app.get("/")
-async def root():
-    """Root endpoint with API information"""
-    return {
-        "service": "Interview Assistant API",
-        "version": "2.0.1",
-        "status": "running",
-        "endpoints": {
-            "health": "/health",
-            "env_check": "/check-env",
-            "models": "/api/models/status",
-            "websockets": {
-                "transcription": "/ws/dual-transcribe?language=en",
-                "qa_copilot": "/ws/live-interview"
-            }
-        }
-    }
-
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint for Render monitoring"""
     return {
         "status": "ok",
-        "message": "Interview Assistant API is running",
+        "message": "Interview Assistant API - Render Compatible",
         "audio_capture": "browser-based",
-        "server_audio": "not required",
-        "services": {
-            "deepgram": "ready" if DEEPGRAM_API_KEY else "missing_api_key",
-            "openai": "ready" if OPENAI_API_KEY else "missing_api_key",
-            "supabase": "configured" if SUPABASE_URL and SUPABASE_KEY else "not_configured"
-        }
+        "server_audio": "not required"
     }
-
-
-@app.get("/check-env")
-async def check_environment():
-    """
-    Check which environment variables are loaded
-    (Masks sensitive information for security)
-    """
-    def mask_value(value: Optional[str]) -> str:
-        """Mask sensitive values while showing they exist"""
-        if not value:
-            return "❌ Not set"
-        if len(value) < 8:
-            return "✅ Set (***)"
-        return f"✅ Set ({value[:4]}...{value[-4:]})"
-    
-    return {
-        "environment": os.getenv("RENDER", "local"),
-        "port": PORT,
-        "variables": {
-            "OPENAI_API_KEY": mask_value(OPENAI_API_KEY),
-            "DEEPGRAM_API_KEY": mask_value(DEEPGRAM_API_KEY),
-            "SUPABASE_URL": mask_value(SUPABASE_URL),
-            "SUPABASE_KEY": mask_value(SUPABASE_KEY),
-        },
-        "note": "Values are masked for security. Only first/last 4 characters shown."
-    }
-
 
 @app.get("/api/models/status")
 async def get_model_status():
-    """Get available AI model status"""
     return {
         "default_provider": DEFAULT_MODEL,
-        "available_providers": {
-            "gpt-4o-mini": True,
-            "gpt-4o": True
-        },
-        "openai_configured": bool(OPENAI_API_KEY)
+        "available_providers": {"gpt-4o-mini": True, "gpt-4o": True}
     }
 
-
 # ============================================================================
-# APPLICATION STARTUP
-# ============================================================================
-
-@app.on_event("startup")
-async def startup_event():
-    """Run on application startup"""
-    print("\n" + "=" * 80)
-    print("🚀 INTERVIEW ASSISTANT BACKEND - RENDER PRODUCTION v2.0.1")
-    print("=" * 80)
-    print(f"✅ Port: {PORT}")
-    print(f"✅ Audio capture: Browser-based (100%)")
-    print(f"✅ Deepgram: {'Configured' if DEEPGRAM_API_KEY else '❌ Missing API Key'}")
-    print(f"✅ OpenAI: {'Configured' if OPENAI_API_KEY else '❌ Missing API Key'}")
-    print(f"✅ Supabase: {'Configured' if SUPABASE_URL and SUPABASE_KEY else 'Not configured'}")
-    print("=" * 80)
-    print("📡 WebSocket Endpoints:")
-    print("   • /ws/dual-transcribe?language=en")
-    print("   • /ws/live-interview")
-    print("=" * 80 + "\n")
-
-
-# ============================================================================
-# MAIN ENTRYPOINT
+# STARTUP
 # ============================================================================
 
 if __name__ == "__main__":
     import uvicorn
     
+    print("\n" + "=" * 70)
+    print("🚀 INTERVIEW ASSISTANT BACKEND (RENDER COMPATIBLE)")
+    print("=" * 70)
+    print("✅ Audio capture: Browser-based (100%)")
+    print("✅ No server audio devices required")
+    print("✅ Deepgram: Real-time transcription with KeepAlive")
+    print("✅ OpenAI: Q&A generation")
+    print("=" * 70 + "\n")
+    
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=PORT,
-        log_level="info",
-        access_log=True,
-        ws_ping_interval=20,
-        ws_ping_timeout=20
+        port=int(os.getenv("PORT", 8000)),
+        log_level="info"
     )
