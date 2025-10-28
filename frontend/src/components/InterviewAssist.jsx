@@ -386,7 +386,7 @@ export default function InterviewAssist() {
       const language = languageMap[settings.audioLanguage] || "en";
 
       // 🔧 LOCALHOST URL - Change to production URL for deployment
-      const ws = new WebSocket(`ws://127.0.0.1:8000/ws/dual-transcribe?language=${language}`);
+      const ws = new WebSocket(`wss://interview-assist-1.onrender.com/ws/dual-transcribe?language=${language}`);
       // 🚀 PRODUCTION: const ws = new WebSocket(`wss://your-domain.com/ws/dual-transcribe?language=${language}`);
 
       ws.onopen = () => {
@@ -746,7 +746,7 @@ export default function InterviewAssist() {
   const connectQA = () => {
     return new Promise((resolve, reject) => {
       // 🔧 LOCALHOST URL - Change to production URL for deployment
-      const qaUrl = "ws://127.0.0.1:8000/ws/live-interview";
+      const ws = new WebSocket("wss://interview-assist-1.onrender.com/ws/live-interview");
       // 🚀 PRODUCTION: const qaUrl = "wss://your-domain.com/ws/live-interview";
       
       const handleMessage = (event) => {
