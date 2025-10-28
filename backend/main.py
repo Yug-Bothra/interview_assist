@@ -1,9 +1,18 @@
 """
-Render-Compatible Interview Assistant Backend
+===============================================================================
+INTERVIEW ASSISTANT BACKEND - RENDER PRODUCTION VERSION
+===============================================================================
 Audio capture: 100% browser-based (no server audio devices needed)
 LEFT PANEL: Deepgram dual-stream transcription display
 RIGHT PANEL: Q&A with Deepgram transcripts (no Whisper, no audio_utils.py)
+
+Render-optimized: Direct environment variable loading, WebSocket-ready
+===============================================================================
 """
+
+# ============================================================================
+# IMPORTS
+# ============================================================================
 
 import asyncio
 import json
@@ -16,20 +25,42 @@ from difflib import SequenceMatcher
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
 import openai
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-# Load environment variables
-load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")
+
+# ============================================================================
+# ENVIRONMENT VARIABLES - RENDER COMPATIBLE
+# ============================================================================
+# NOTE: Render automatically loads environment variables from dashboard
+# No need for python-dotenv or .env files in production
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+PORT = int(os.getenv("PORT", 8000))
 
+# Validate critical environment variables
 if not DEEPGRAM_API_KEY:
-    raise ValueError("❌ DEEPGRAM_API_KEY not found")
+    print("⚠️ WARNING: DEEPGRAM_API_KEY not found in environment variables")
 
-app = FastAPI(title="Interview Assistant API - Render Compatible")
+if not OPENAI_API_KEY:
+    print("⚠️ WARNING: OPENAI_API_KEY not found in environment variables")
+else:
+    openai.api_key = OPENAI_API_KEY
+
+
+# ============================================================================
+# FASTAPI APPLICATION SETUP
+# ============================================================================
+
+app = FastAPI(
+    title="Interview Assistant API - Render Production",
+    description="Real-time interview assistance with Deepgram transcription and OpenAI Q&A",
+    version="2.0.0"
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -39,24 +70,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # ============================================================================
-# CONFIGURATION
+# CONFIGURATION CONSTANTS
 # ============================================================================
 
 DEFAULT_MODEL = "gpt-4o-mini"
 KEEPALIVE_INTERVAL = 5
 
+
 class ConnectionState(Enum):
+    """WebSocket connection states"""
     DISCONNECTED = "disconnected"
     CONNECTING = "connecting"
     CONNECTED = "connected"
     DISCONNECTING = "disconnecting"
+
 
 # ============================================================================
 # DEEPGRAM CONFIGURATION
 # ============================================================================
 
 def get_deepgram_url(language="en"):
+    """Generate Deepgram WebSocket URL with optimal parameters"""
     return (
         f"wss://api.deepgram.com/v1/listen"
         f"?model=nova-2"
@@ -73,11 +109,16 @@ def get_deepgram_url(language="en"):
         f"&profanity_filter=false"
     )
 
+
 class StreamType(Enum):
+    """Audio stream types for dual transcription"""
     CANDIDATE = "candidate"
     INTERVIEWER = "interviewer"
 
+
 class DeepgramStream:
+    """Manages a single Deepgram WebSocket connection with automatic reconnection"""
+    
     def __init__(self, api_key: str, stream_type: StreamType, language: str = "en"):
         self.api_key = api_key
         self.stream_type = stream_type
@@ -89,6 +130,7 @@ class DeepgramStream:
         self.max_retries = 3
         
     async def connect(self) -> None:
+        """Connect to Deepgram with retry logic"""
         self.state = ConnectionState.CONNECTING
         
         for attempt in range(self.max_retries):
@@ -115,6 +157,7 @@ class DeepgramStream:
                     raise
     
     async def send_keepalive(self) -> None:
+        """Send periodic keepalive messages to maintain connection"""
         try:
             while not self.is_closing and self.ws and self.state == ConnectionState.CONNECTED:
                 await asyncio.sleep(KEEPALIVE_INTERVAL)
@@ -127,6 +170,7 @@ class DeepgramStream:
             pass
     
     async def send_audio(self, audio_data: bytes) -> bool:
+        """Send audio data to Deepgram"""
         if not self.ws or self.is_closing or self.state != ConnectionState.CONNECTED:
             return False
         try:
@@ -136,6 +180,7 @@ class DeepgramStream:
             return False
     
     async def receive_transcripts(self) -> Optional[dict]:
+        """Receive transcript results from Deepgram"""
         if not self.ws or self.state != ConnectionState.CONNECTED:
             return None
         try:
@@ -147,6 +192,7 @@ class DeepgramStream:
             return None
     
     async def close(self) -> None:
+        """Gracefully close the Deepgram connection"""
         if self.is_closing:
             return
         self.is_closing = True
@@ -168,13 +214,17 @@ class DeepgramStream:
                 pass
         self.state = ConnectionState.DISCONNECTED
 
+
 class DualStreamManager:
+    """Manages both candidate and interviewer Deepgram streams"""
+    
     def __init__(self, api_key: str, language: str = "en"):
         self.candidate_stream = DeepgramStream(api_key, StreamType.CANDIDATE, language)
         self.interviewer_stream = DeepgramStream(api_key, StreamType.INTERVIEWER, language)
         self.is_active = False
         
     async def connect_all(self) -> None:
+        """Connect both streams simultaneously"""
         try:
             await asyncio.gather(
                 self.candidate_stream.connect(),
@@ -196,12 +246,14 @@ class DualStreamManager:
             raise
     
     async def close_all(self) -> None:
+        """Close both streams gracefully"""
         self.is_active = False
         await asyncio.gather(
             self.candidate_stream.close(),
             self.interviewer_stream.close(),
             return_exceptions=True
         )
+
 
 # ============================================================================
 # TRANSCRIPT ACCUMULATOR FOR Q&A
@@ -272,8 +324,9 @@ class TranscriptAccumulator:
             return complete_text
         return None
 
+
 # ============================================================================
-# Q&A PROCESSING
+# Q&A PROCESSING WITH OPENAI
 # ============================================================================
 
 RESPONSE_STYLES = {
@@ -336,12 +389,14 @@ Response format:
 CRITICAL: Do NOT rephrase or rewrite the question. Extract it EXACTLY as spoken.
 """
 
+
 async def process_transcript_with_ai(
     transcript: str,
     settings: Dict[str, Any],
     persona_data: Optional[Dict] = None,
     custom_style_prompt: Optional[str] = None
 ) -> Dict[str, Any]:
+    """Process transcript with OpenAI to detect questions and generate answers"""
     try:
         response_style_id = settings.get("selectedResponseStyleId", "concise")
         
@@ -414,15 +469,19 @@ CANDIDATE CONTEXT:
         print(f"❌ AI error: {e}")
         return {"has_question": False, "question": None, "answer": None}
 
+
 # ============================================================================
-# WEBSOCKET: DEEPGRAM DUAL-STREAM (LEFT PANEL)
+# WEBSOCKET HANDLERS
 # ============================================================================
 
 @app.websocket("/ws/dual-transcribe")
 async def websocket_dual_transcribe(websocket: WebSocket):
-    """Deepgram display for Interviewer + Candidate"""
+    """
+    Deepgram dual-stream transcription for LEFT PANEL
+    Handles both interviewer and candidate audio streams
+    """
     await websocket.accept()
-    print("\n🎙️ Deepgram connected")
+    print("\n🎙️ Deepgram dual-transcribe connected")
     
     language = websocket.query_params.get("language", "en")
     stream_manager = DualStreamManager(DEEPGRAM_API_KEY, language)
@@ -433,6 +492,7 @@ async def websocket_dual_transcribe(websocket: WebSocket):
         await websocket.send_json({"type": "connected", "message": "Deepgram streams ready"})
         
         async def handle_audio():
+            """Receive audio from frontend and route to appropriate Deepgram stream"""
             try:
                 while stream_manager.is_active:
                     try:
@@ -445,6 +505,7 @@ async def websocket_dual_transcribe(websocket: WebSocket):
                         if not audio_data or not stream_type:
                             continue
                         
+                        # Convert audio data to bytes
                         if isinstance(audio_data, list):
                             import struct
                             audio_bytes = struct.pack(f'{len(audio_data)}h', *audio_data)
@@ -454,6 +515,7 @@ async def websocket_dual_transcribe(websocket: WebSocket):
                         else:
                             audio_bytes = audio_data
                         
+                        # Route to appropriate stream
                         if stream_type == "candidate":
                             await stream_manager.candidate_stream.send_audio(audio_bytes)
                         elif stream_type == "interviewer":
@@ -461,9 +523,10 @@ async def websocket_dual_transcribe(websocket: WebSocket):
                     except asyncio.TimeoutError:
                         continue
             except Exception as e:
-                print(f"❌ Audio error: {e}")
+                print(f"❌ Audio handling error: {e}")
         
         async def handle_transcripts():
+            """Receive transcripts from Deepgram and forward to frontend"""
             async def process_stream(stream: DeepgramStream):
                 try:
                     while stream_manager.is_active and stream.state == ConnectionState.CONNECTED:
@@ -490,7 +553,7 @@ async def websocket_dual_transcribe(websocket: WebSocket):
                                     }
                                     await websocket.send_json(response)
                 except Exception as e:
-                    print(f"❌ Stream error: {e}")
+                    print(f"❌ Stream processing error: {e}")
             
             await asyncio.gather(
                 process_stream(stream_manager.candidate_stream),
@@ -498,6 +561,7 @@ async def websocket_dual_transcribe(websocket: WebSocket):
                 return_exceptions=True
             )
         
+        # Run both handlers concurrently
         audio_task = asyncio.create_task(handle_audio())
         transcript_task = asyncio.create_task(handle_transcripts())
         
@@ -510,22 +574,22 @@ async def websocket_dual_transcribe(websocket: WebSocket):
             task.cancel()
     
     except Exception as e:
-        print(f"❌ Deepgram error: {e}")
+        print(f"❌ Deepgram dual-transcribe error: {e}")
     finally:
         await stream_manager.close_all()
         try:
             await websocket.close()
         except:
             pass
-        print("🔌 Deepgram closed\n")
+        print("🔌 Deepgram dual-transcribe closed\n")
 
-# ============================================================================
-# WEBSOCKET: Q&A WITH DEEPGRAM TRANSCRIPTS (RIGHT PANEL)
-# ============================================================================
 
 @app.websocket("/ws/live-interview")
 async def websocket_live_interview(websocket: WebSocket):
-    """Q&A Copilot - processes Deepgram transcripts from frontend"""
+    """
+    Q&A Copilot for RIGHT PANEL
+    Processes Deepgram transcripts from frontend and generates answers
+    """
     await websocket.accept()
     print("\n🤖 Q&A Copilot connected")
     
@@ -562,6 +626,7 @@ async def websocket_live_interview(websocket: WebSocket):
     custom_style_prompt = None
     
     async def safe_send(data: dict) -> bool:
+        """Thread-safe WebSocket send with state checking"""
         state = await get_state()
         if state != ConnectionState.CONNECTED:
             return False
@@ -582,6 +647,7 @@ async def websocket_live_interview(websocket: WebSocket):
                 data = json.loads(message)
                 
                 if data.get("type") == "init":
+                    # Initialize session settings
                     received_settings = data.get("settings", {})
                     settings.update(received_settings)
                     
@@ -601,7 +667,7 @@ async def websocket_live_interview(websocket: WebSocket):
                     custom_style_prompt = data.get("custom_style_prompt", None)
                     
                     print("=" * 60)
-                    print("🎯 Q&A INITIALIZED")
+                    print("🎯 Q&A COPILOT INITIALIZED")
                     print("=" * 60)
                     print(f"⏱️  Pause threshold: {transcript_accumulator.pause_threshold}s")
                     print(f"📋 Position: {persona_data['position']}")
@@ -611,6 +677,7 @@ async def websocket_live_interview(websocket: WebSocket):
                     await safe_send({"type": "connected", "message": "Q&A initialized"})
                 
                 elif data.get("type") == "transcript":
+                    # Process incoming transcript
                     if not transcript_accumulator:
                         continue
                     
@@ -633,6 +700,7 @@ async def websocket_live_interview(websocket: WebSocket):
                             print(f"\n📝 Complete paragraph detected:")
                             print(f"   {complete_paragraph[:100]}...")
                             
+                            # Check for duplicates
                             if any(complete_paragraph.lower() == prev.lower() for prev in prev_questions):
                                 print("⏭️  Duplicate question skipped")
                                 continue
@@ -670,6 +738,7 @@ async def websocket_live_interview(websocket: WebSocket):
                     await safe_send({"type": "pong"})
                     
             except asyncio.TimeoutError:
+                # Check for force completion on timeout
                 if transcript_accumulator and transcript_accumulator.current_paragraph:
                     current_time = time.time()
                     time_since_last = current_time - transcript_accumulator.last_speech_time
@@ -720,45 +789,121 @@ async def websocket_live_interview(websocket: WebSocket):
             pass
         print("🔌 Q&A closed\n")
 
+
 # ============================================================================
-# API ENDPOINTS
+# REST API ENDPOINTS
 # ============================================================================
+
+@app.get("/")
+async def root():
+    """Root endpoint with API information"""
+    return {
+        "service": "Interview Assistant API",
+        "version": "2.0.0",
+        "status": "running",
+        "endpoints": {
+            "health": "/health",
+            "env_check": "/check-env",
+            "models": "/api/models/status",
+            "websockets": {
+                "transcription": "/ws/dual-transcribe?language=en",
+                "qa_copilot": "/ws/live-interview"
+            }
+        }
+    }
+
 
 @app.get("/health")
 async def health_check():
+    """Health check endpoint for Render monitoring"""
     return {
         "status": "ok",
-        "message": "Interview Assistant API - Render Compatible",
+        "message": "Interview Assistant API is running",
         "audio_capture": "browser-based",
-        "server_audio": "not required"
+        "server_audio": "not required",
+        "services": {
+            "deepgram": "ready" if DEEPGRAM_API_KEY else "missing_api_key",
+            "openai": "ready" if OPENAI_API_KEY else "missing_api_key",
+            "supabase": "configured" if SUPABASE_URL and SUPABASE_KEY else "not_configured"
+        }
     }
+
+
+@app.get("/check-env")
+async def check_environment():
+    """
+    Check which environment variables are loaded
+    (Masks sensitive information for security)
+    """
+    def mask_value(value: Optional[str]) -> str:
+        """Mask sensitive values while showing they exist"""
+        if not value:
+            return "❌ Not set"
+        if len(value) < 8:
+            return "✅ Set (***)"
+        return f"✅ Set ({value[:4]}...{value[-4:]})"
+    
+    return {
+        "environment": os.getenv("RENDER", "local"),
+        "port": PORT,
+        "variables": {
+            "OPENAI_API_KEY": mask_value(OPENAI_API_KEY),
+            "DEEPGRAM_API_KEY": mask_value(DEEPGRAM_API_KEY),
+            "SUPABASE_URL": mask_value(SUPABASE_URL),
+            "SUPABASE_KEY": mask_value(SUPABASE_KEY),
+        },
+        "note": "Values are masked for security. Only first/last 4 characters shown."
+    }
+
 
 @app.get("/api/models/status")
 async def get_model_status():
+    """Get available AI model status"""
     return {
         "default_provider": DEFAULT_MODEL,
-        "available_providers": {"gpt-4o-mini": True, "gpt-4o": True}
+        "available_providers": {
+            "gpt-4o-mini": True,
+            "gpt-4o": True
+        },
+        "openai_configured": bool(OPENAI_API_KEY)
     }
 
+
 # ============================================================================
-# STARTUP
+# APPLICATION STARTUP
+# ============================================================================
+
+@app.on_event("startup")
+async def startup_event():
+    """Run on application startup"""
+    print("\n" + "=" * 80)
+    print("🚀 INTERVIEW ASSISTANT BACKEND - RENDER PRODUCTION")
+    print("=" * 80)
+    print(f"✅ Port: {PORT}")
+    print(f"✅ Audio capture: Browser-based (100%)")
+    print(f"✅ Deepgram: {'Configured' if DEEPGRAM_API_KEY else '❌ Missing API Key'}")
+    print(f"✅ OpenAI: {'Configured' if OPENAI_API_KEY else '❌ Missing API Key'}")
+    print(f"✅ Supabase: {'Configured' if SUPABASE_URL and SUPABASE_KEY else 'Not configured'}")
+    print("=" * 80)
+    print("📡 WebSocket Endpoints:")
+    print("   • wss://your-domain.onrender.com/ws/dual-transcribe?language=en")
+    print("   • wss://your-domain.onrender.com/ws/live-interview")
+    print("=" * 80 + "\n")
+
+
+# ============================================================================
+# MAIN ENTRYPOINT
 # ============================================================================
 
 if __name__ == "__main__":
     import uvicorn
     
-    print("\n" + "=" * 70)
-    print("🚀 INTERVIEW ASSISTANT BACKEND (RENDER COMPATIBLE)")
-    print("=" * 70)
-    print("✅ Audio capture: Browser-based (100%)")
-    print("✅ No server audio devices required")
-    print("✅ Deepgram: Real-time transcription")
-    print("✅ OpenAI: Q&A generation")
-    print("=" * 70 + "\n")
-    
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=int(os.getenv("PORT", 8000)),
-        log_level="info"
+        port=PORT,
+        log_level="info",
+        access_log=True,
+        ws_ping_interval=20,
+        ws_ping_timeout=20
     )
