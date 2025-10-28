@@ -1,9 +1,9 @@
 """
 Render-Compatible Interview Assistant Backend
-Audio capture: 100% browser-based (no server audio devices needed)
-LEFT PANEL: Deepgram dual-stream transcription display
-RIGHT PANEL: Q&A with Deepgram transcripts (no Whisper, no audio_utils.py)
-✅ ADDED: ping_interval & ping_timeout for both WebSockets
+✅ Browser-based audio capture (100% client-side)
+✅ Deepgram dual-stream transcription with ping/pong keepalive
+✅ Q&A WebSocket with automatic reconnection support
+✅ Production-ready for Render deployment
 """
 
 import asyncio
@@ -95,12 +95,11 @@ class DeepgramStream:
         for attempt in range(self.max_retries):
             try:
                 url = get_deepgram_url(self.language)
-                # ✅ ADDED: ping_interval and ping_timeout
                 self.ws = await websockets.connect(
                     url,
                     extra_headers={"Authorization": f"Token {self.api_key}"},
-                    ping_interval=20,  # ✅ Send ping every 20 seconds
-                    ping_timeout=30,   # ✅ Wait 30 seconds for pong response
+                    ping_interval=20,  # Send ping every 20 seconds
+                    ping_timeout=30,   # Wait 30 seconds for pong
                     max_size=10_000_000,
                     close_timeout=5
                 )
@@ -425,17 +424,35 @@ CANDIDATE CONTEXT:
 async def websocket_dual_transcribe(websocket: WebSocket):
     """Deepgram display for Interviewer + Candidate"""
     await websocket.accept()
-    print("\n🎙️ Deepgram connected")
+    print("\n🎙️ Deepgram WebSocket accepted")
     
     language = websocket.query_params.get("language", "en")
     stream_manager = DualStreamManager(DEEPGRAM_API_KEY, language)
     
+    has_received_audio = False
+    last_audio_time = time.time()
+    
     try:
+        # Send ready signal
         await websocket.send_json({"type": "ready", "message": "Deepgram ready"})
+        print("📤 Sent ready signal to client")
+        
+        # Wait for client start signal
+        start_message = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+        start_data = json.loads(start_message)
+        
+        if start_data.get("type") != "start":
+            print(f"⚠️ Expected 'start' message, got: {start_data.get('type')}")
+        
+        print("🔵 Client ready, connecting to Deepgram...")
+        
+        # Connect to Deepgram
         await stream_manager.connect_all()
         await websocket.send_json({"type": "connected", "message": "Deepgram streams ready"})
+        print("✅ Deepgram streams connected and ready")
         
         async def handle_audio():
+            nonlocal has_received_audio, last_audio_time
             try:
                 while stream_manager.is_active:
                     try:
@@ -448,6 +465,12 @@ async def websocket_dual_transcribe(websocket: WebSocket):
                         if not audio_data or not stream_type:
                             continue
                         
+                        if not has_received_audio:
+                            print(f"🎵 First audio received from {stream_type}")
+                            has_received_audio = True
+                        
+                        last_audio_time = time.time()
+                        
                         if isinstance(audio_data, list):
                             import struct
                             audio_bytes = struct.pack(f'{len(audio_data)}h', *audio_data)
@@ -458,13 +481,20 @@ async def websocket_dual_transcribe(websocket: WebSocket):
                             audio_bytes = audio_data
                         
                         if stream_type == "candidate":
-                            await stream_manager.candidate_stream.send_audio(audio_bytes)
+                            success = await stream_manager.candidate_stream.send_audio(audio_bytes)
+                            if not success:
+                                print("⚠️ Failed to send candidate audio")
                         elif stream_type == "interviewer":
-                            await stream_manager.interviewer_stream.send_audio(audio_bytes)
+                            success = await stream_manager.interviewer_stream.send_audio(audio_bytes)
+                            if not success:
+                                print("⚠️ Failed to send interviewer audio")
                     except asyncio.TimeoutError:
                         continue
+                    except Exception as e:
+                        print(f"❌ Audio handler error: {e}")
+                        break
             except Exception as e:
-                print(f"❌ Audio error: {e}")
+                print(f"❌ Audio loop error: {e}")
         
         async def handle_transcripts():
             async def process_stream(stream: DeepgramStream):
@@ -491,36 +521,83 @@ async def websocket_dual_transcribe(websocket: WebSocket):
                                         "is_final": transcript_data.get("is_final", False),
                                         "speech_final": transcript_data.get("speech_final", False)
                                     }
-                                    await websocket.send_json(response)
+                                    try:
+                                        await websocket.send_json(response)
+                                    except Exception as e:
+                                        print(f"❌ Failed to send transcript: {e}")
+                                        break
                 except Exception as e:
-                    print(f"❌ Stream error: {e}")
+                    print(f"❌ Stream {stream.stream_type.value} error: {e}")
             
-            await asyncio.gather(
-                process_stream(stream_manager.candidate_stream),
-                process_stream(stream_manager.interviewer_stream),
-                return_exceptions=True
-            )
+            try:
+                await asyncio.gather(
+                    process_stream(stream_manager.candidate_stream),
+                    process_stream(stream_manager.interviewer_stream),
+                    return_exceptions=True
+                )
+            except Exception as e:
+                print(f"❌ Transcript handler error: {e}")
         
+        async def monitor_connection():
+            """Monitor connection health"""
+            nonlocal has_received_audio, last_audio_time
+            try:
+                await asyncio.sleep(5)
+                
+                while stream_manager.is_active:
+                    if not has_received_audio:
+                        print("⚠️ No audio received yet after 5+ seconds")
+                    else:
+                        time_since_audio = time.time() - last_audio_time
+                        if time_since_audio > 30:
+                            print(f"⚠️ No audio for {time_since_audio:.1f} seconds")
+                    
+                    await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                pass
+        
+        # Start all tasks
         audio_task = asyncio.create_task(handle_audio())
         transcript_task = asyncio.create_task(handle_transcripts())
+        monitor_task = asyncio.create_task(monitor_connection())
         
         done, pending = await asyncio.wait(
-            [audio_task, transcript_task],
+            [audio_task, transcript_task, monitor_task],
             return_when=asyncio.FIRST_COMPLETED
         )
         
         for task in pending:
             task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        
+        for task in done:
+            if task.exception():
+                print(f"❌ Task error: {task.exception()}")
     
+    except asyncio.TimeoutError:
+        print("❌ Client didn't send start signal within 30 seconds")
+        await websocket.send_json({"type": "error", "message": "Connection timeout"})
+    except WebSocketDisconnect:
+        print("🔌 Client disconnected")
     except Exception as e:
-        print(f"❌ Deepgram error: {e}")
+        print(f"❌ Deepgram WebSocket error: {e}")
+        import traceback
+        traceback.print_exc()
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except:
+            pass
     finally:
+        print("🛑 Closing Deepgram streams...")
         await stream_manager.close_all()
         try:
             await websocket.close()
         except:
             pass
-        print("🔌 Deepgram closed\n")
+        print("🔌 Deepgram connection fully closed\n")
 
 # ============================================================================
 # WEBSOCKET: Q&A WITH DEEPGRAM TRANSCRIPTS (RIGHT PANEL)
@@ -534,8 +611,6 @@ async def websocket_live_interview(websocket: WebSocket):
     
     connection_state = ConnectionState.CONNECTED
     state_lock = asyncio.Lock()
-    
-    # ✅ ADDED: Ping/pong keepalive task
     ping_task: Optional[asyncio.Task] = None
     
     async def get_state():
@@ -547,12 +622,11 @@ async def websocket_live_interview(websocket: WebSocket):
         async with state_lock:
             connection_state = new_state
     
-    # ✅ ADDED: Keepalive ping function
     async def send_keepalive_pings():
         """Send periodic pings to keep connection alive"""
         try:
             while await get_state() == ConnectionState.CONNECTED:
-                await asyncio.sleep(20)  # Send ping every 20 seconds
+                await asyncio.sleep(20)
                 if await get_state() == ConnectionState.CONNECTED:
                     try:
                         await websocket.send_json({"type": "ping"})
@@ -598,8 +672,6 @@ async def websocket_live_interview(websocket: WebSocket):
     
     try:
         await safe_send({"type": "ready", "message": "Q&A ready"})
-        
-        # ✅ ADDED: Start keepalive ping task
         ping_task = asyncio.create_task(send_keepalive_pings())
         
         while await get_state() == ConnectionState.CONNECTED:
@@ -692,7 +764,6 @@ async def websocket_live_interview(websocket: WebSocket):
                             else:
                                 print("⏭️  No question detected")
                 
-                # ✅ ADDED: Handle pong response from client
                 elif data.get("type") == "pong":
                     print("🏓 Received pong from client")
                     
@@ -742,7 +813,6 @@ async def websocket_live_interview(websocket: WebSocket):
     finally:
         await set_state(ConnectionState.DISCONNECTED)
         
-        # ✅ ADDED: Cancel ping task on disconnect
         if ping_task and not ping_task.done():
             ping_task.cancel()
             try:
