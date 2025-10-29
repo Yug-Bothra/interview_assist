@@ -1,9 +1,9 @@
 """
 Render-Compatible Interview Assistant Backend
-✅ FIXED: Startup crashes
+✅ FIXED: Websockets 14.1 compatibility
+✅ FIXED: additional_headers parameter
 ✅ FIXED: Port detection
 ✅ FIXED: API key validation
-✅ FIXED: WebSocket timeouts
 """
 
 import sys
@@ -36,7 +36,7 @@ from websockets.exceptions import ConnectionClosed
 # Load environment variables
 load_dotenv()
 
-# ✅ FIXED: Make API keys optional at startup (validate per-request)
+# ✅ FIXED: Make API keys optional at startup
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
@@ -112,14 +112,18 @@ class DeepgramStream:
         self.max_retries = 3
         
     async def connect(self) -> None:
+        """✅ FIXED: Using additional_headers for websockets 14.1"""
         self.state = ConnectionState.CONNECTING
         
         for attempt in range(self.max_retries):
             try:
                 url = get_deepgram_url(self.language)
+                
+                # ✅ CRITICAL FIX: Use 'additional_headers' instead of 'extra_headers'
+                # websockets 14.1 uses 'additional_headers' parameter
                 self.ws = await websockets.connect(
                     url,
-                    extra_headers={"Authorization": f"Token {self.api_key}"},
+                    additional_headers={"Authorization": f"Token {self.api_key}"},
                     ping_interval=20,
                     ping_timeout=30,
                     max_size=10_000_000,
@@ -444,6 +448,7 @@ async def root():
         "status": "running",
         "service": "Interview Assistant API",
         "version": "1.0.0",
+        "websockets_version": "14.1",
         "docs": "/docs",
         "health": "/health"
     }
@@ -457,7 +462,8 @@ async def health_check():
         "audio_capture": "browser-based",
         "server_audio": "not required",
         "deepgram": "configured" if DEEPGRAM_API_KEY else "missing",
-        "openai": "configured" if OPENAI_API_KEY else "missing"
+        "openai": "configured" if OPENAI_API_KEY else "missing",
+        "websockets_version": "14.1"
     }
 
 @app.get("/api/models/status")
@@ -475,7 +481,6 @@ async def get_model_status():
 async def websocket_dual_transcribe(websocket: WebSocket):
     await websocket.accept()
     
-    # ✅ Validate API key AFTER accepting
     if not DEEPGRAM_API_KEY:
         await websocket.send_json({
             "type": "error",
@@ -484,7 +489,6 @@ async def websocket_dual_transcribe(websocket: WebSocket):
         await websocket.close()
         return
     
-    # ✅ Send immediate handshake
     await websocket.send_json({
         "type": "connection_established",
         "message": "Deepgram WebSocket ready",
@@ -500,7 +504,6 @@ async def websocket_dual_transcribe(websocket: WebSocket):
     should_keepalive = True
     
     async def send_render_keepalive():
-        """Send keepalive every 30s to prevent Render timeout"""
         try:
             while should_keepalive:
                 await asyncio.sleep(RENDER_KEEPALIVE)
@@ -635,7 +638,6 @@ async def websocket_dual_transcribe(websocket: WebSocket):
 async def websocket_live_interview(websocket: WebSocket):
     await websocket.accept()
     
-    # ✅ Validate API key AFTER accepting
     if not OPENAI_API_KEY:
         await websocket.send_json({
             "type": "error",
@@ -644,7 +646,6 @@ async def websocket_live_interview(websocket: WebSocket):
         await websocket.close()
         return
     
-    # ✅ Send immediate handshake
     await websocket.send_json({
         "type": "connection_established",
         "message": "Q&A WebSocket ready",
@@ -837,6 +838,7 @@ if __name__ == "__main__":
     print("=" * 70)
     print(f"Port: {port}")
     print(f"Host: 0.0.0.0")
+    print(f"Websockets: 14.1 (additional_headers compatible)")
     print(f"Deepgram: {'✅ Configured' if DEEPGRAM_API_KEY else '❌ Missing'}")
     print(f"OpenAI: {'✅ Configured' if OPENAI_API_KEY else '❌ Missing'}")
     print("=" * 70)
