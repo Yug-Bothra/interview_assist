@@ -16,6 +16,23 @@ import {
 import { jsPDF } from "jspdf";
 
 // ============================================================================
+// WEBSOCKET URL CONFIGURATION - PRODUCTION READY
+// ============================================================================
+
+const BACKEND_URL = "interview-assist-1.onrender.com";
+
+const getWebSocketUrl = (path) => {
+  const isDevelopment = window.location.hostname === 'localhost' || 
+                        window.location.hostname === '127.0.0.1';
+  
+  if (isDevelopment) {
+    return `ws://127.0.0.1:8000${path}`;
+  } else {
+    return `wss://${BACKEND_URL}${path}`;
+  }
+};
+
+// ============================================================================
 // WEBSOCKET RECONNECTION UTILITIES
 // ============================================================================
 
@@ -35,6 +52,7 @@ class ReconnectingWebSocket {
   connect() {
     return new Promise((resolve, reject) => {
       try {
+        console.log(`🔗 Connecting to: ${this.url}`);
         this.ws = new WebSocket(this.url);
 
         this.ws.onopen = () => {
@@ -385,9 +403,10 @@ export default function InterviewAssist() {
       };
       const language = languageMap[settings.audioLanguage] || "en";
 
-      // 🔧 LOCALHOST URL - Change to production URL for deployment
-      const ws = new WebSocket(`ws://127.0.0.1:8000/ws/dual-transcribe?language=${language}`);
-      // 🚀 PRODUCTION: const ws = new WebSocket(`wss://your-domain.com/ws/dual-transcribe?language=${language}`);
+      // ✅ PRODUCTION READY - Dynamic WebSocket URL
+      const wsUrl = getWebSocketUrl(`/ws/dual-transcribe?language=${language}`);
+      console.log(`🔗 Connecting to Deepgram: ${wsUrl}`);
+      const ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
         console.log('✓ Deepgram connected');
@@ -414,7 +433,7 @@ export default function InterviewAssist() {
 
       ws.onerror = (error) => {
         console.error('❌ Deepgram error:', error);
-        setTabAudioError('Connection error. Backend must be running.');
+        setTabAudioError('Connection error. Check backend deployment.');
         setDeepgramStatus("Error");
         reject(error);
       };
@@ -502,7 +521,7 @@ export default function InterviewAssist() {
               id: Date.now() + Math.random()
             }]);
             
-            // ⭐ UPDATED: Send using reconnecting websocket
+            // Send to Q&A using reconnecting websocket
             if (reconnectingQaWsRef.current) {
               reconnectingQaWsRef.current.send({
                 type: "transcript",
@@ -745,9 +764,9 @@ export default function InterviewAssist() {
 
   const connectQA = () => {
     return new Promise((resolve, reject) => {
-      // 🔧 LOCALHOST URL - Change to production URL for deployment
-      const qaUrl = "ws://127.0.0.1:8000/ws/live-interview";
-      // 🚀 PRODUCTION: const qaUrl = "wss://your-domain.com/ws/live-interview";
+      // ✅ PRODUCTION READY - Dynamic WebSocket URL
+      const qaUrl = getWebSocketUrl("/ws/live-interview");
+      console.log(`🔗 Connecting to Q&A: ${qaUrl}`);
       
       const handleMessage = (event) => {
         try {
@@ -1453,6 +1472,10 @@ export default function InterviewAssist() {
                   <div className="flex justify-between py-1">
                     <span className="text-gray-400">Model:</span>
                     <span className="text-white font-medium">{settings.defaultModel}</span>
+                  </div>
+                  <div className="flex justify-between py-1">
+                    <span className="text-gray-400">Backend:</span>
+                    <span className="text-green-400 font-medium text-xs">{BACKEND_URL}</span>
                   </div>
                 </div>
               </div>
