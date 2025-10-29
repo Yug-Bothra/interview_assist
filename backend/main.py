@@ -500,16 +500,22 @@ async def websocket_dual_transcribe(websocket: WebSocket):
     should_keepalive = True
     
     async def send_render_keepalive():
+        """Send keepalive every 30s to prevent Render timeout"""
         try:
             while should_keepalive:
                 await asyncio.sleep(RENDER_KEEPALIVE)
-                if stream_manager.is_active:
-                    await websocket.send_json({
-                        "type": "keepalive",
-                        "timestamp": time.time()
-                    })
+                if should_keepalive:
+                    try:
+                        await websocket.send_json({
+                            "type": "keepalive",
+                            "timestamp": time.time()
+                        })
+                        print(f"🏓 Deepgram keepalive sent")
+                    except Exception as e:
+                        print(f"❌ Keepalive failed: {e}")
+                        break
         except asyncio.CancelledError:
-            pass
+            print("⏹️ Deepgram keepalive cancelled")
     
     try:
         await websocket.send_json({"type": "ready", "message": "Deepgram ready"})

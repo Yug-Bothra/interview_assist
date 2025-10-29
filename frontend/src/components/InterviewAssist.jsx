@@ -61,11 +61,14 @@ class ReconnectingWebSocket {
           this.onStatusChange?.("connected");
           
           // ✅ CRITICAL: Send immediate handshake to prevent Render timeout
-          this.send({
-            type: "client_ready",
-            timestamp: Date.now()
-          });
-          console.log("📤 Sent immediate handshake");
+          // Use setTimeout to ensure WebSocket is fully ready
+          setTimeout(() => {
+            this.send({
+              type: "client_ready",
+              timestamp: Date.now()
+            });
+            console.log("📤 Sent immediate handshake to:", this.url);
+          }, 100);
           
           this.startPingPong();
           resolve(this.ws);
