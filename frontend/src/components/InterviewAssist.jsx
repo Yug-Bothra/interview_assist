@@ -33,7 +33,7 @@ const getWebSocketUrl = (path) => {
 };
 
 // ============================================================================
-// WEBSOCKET RECONNECTION UTILITIES
+// WEBSOCKET RECONNECTION WITH RENDER FIXES
 // ============================================================================
 
 class ReconnectingWebSocket {
@@ -59,6 +59,14 @@ class ReconnectingWebSocket {
           console.log(`✅ Connected: ${this.url}`);
           this.retryCount = 0;
           this.onStatusChange?.("connected");
+          
+          // ✅ CRITICAL: Send immediate handshake to prevent Render timeout
+          this.send({
+            type: "client_ready",
+            timestamp: Date.now()
+          });
+          console.log("📤 Sent immediate handshake");
+          
           this.startPingPong();
           resolve(this.ws);
         };
@@ -66,10 +74,21 @@ class ReconnectingWebSocket {
         this.ws.onmessage = (event) => {
           const data = JSON.parse(event.data);
           
-          // Handle server ping
-          if (data.type === "ping") {
-            this.send({ type: "pong" });
-            console.log("🏓 Received ping, sent pong");
+          // Handle server keepalive ping
+          if (data.type === "keepalive") {
+            console.log("🏓 Received server keepalive");
+            return;
+          }
+          
+          // Handle server acknowledgment
+          if (data.type === "server_ack") {
+            console.log("✅ Server acknowledged handshake");
+            return;
+          }
+          
+          // Handle connection established
+          if (data.type === "connection_established") {
+            console.log("✅ Connection established:", data.message);
             return;
           }
           
@@ -97,13 +116,13 @@ class ReconnectingWebSocket {
   }
 
   startPingPong() {
-    // Send ping every 25 seconds to keep connection alive
+    // ✅ Send ping every 30 seconds (Render has 60s timeout)
     this.pingInterval = setInterval(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.send({ type: "ping" });
-        console.log("🏓 Sent keepalive ping");
+        console.log("🏓 Sent client ping");
       }
-    }, 25000);
+    }, 30000);
   }
 
   stopPingPong() {
@@ -118,7 +137,6 @@ class ReconnectingWebSocket {
       clearTimeout(this.reconnectTimeout);
     }
 
-    // Exponential backoff: 1s, 2s, 4s, 8s, 16s
     const delay = Math.min(1000 * Math.pow(2, this.retryCount), 16000);
     this.retryCount++;
 
@@ -345,6 +363,7 @@ export default function InterviewAssist() {
   // Refs
   const deepgramWsRef = useRef(null);
   const qaWsRef = useRef(null);
+  const reconnectingDeepgramWsRef = useRef(null);
   const reconnectingQaWsRef = useRef(null);
   const candidateStreamRef = useRef(null);
   const interviewerStreamRef = useRef(null);
@@ -403,19 +422,10 @@ export default function InterviewAssist() {
       };
       const language = languageMap[settings.audioLanguage] || "en";
 
-      // ✅ PRODUCTION READY - Dynamic WebSocket URL
       const wsUrl = getWebSocketUrl(`/ws/dual-transcribe?language=${language}`);
       console.log(`🔗 Connecting to Deepgram: ${wsUrl}`);
-      const ws = new WebSocket(wsUrl);
 
-      ws.onopen = () => {
-        console.log('✓ Deepgram connected');
-        setDeepgramStatus("Connected");
-        setTabAudioError("");
-        resolve(ws);
-      };
-
-      ws.onmessage = (event) => {
+      const handleMessage = (event) => {
         try {
           const data = JSON.parse(event.data);
 
@@ -431,19 +441,30 @@ export default function InterviewAssist() {
         }
       };
 
-      ws.onerror = (error) => {
-        console.error('❌ Deepgram error:', error);
-        setTabAudioError('Connection error. Check backend deployment.');
-        setDeepgramStatus("Error");
-        reject(error);
+      const handleStatusChange = (status) => {
+        if (status === "connected") {
+          setDeepgramStatus("Connected");
+          setTabAudioError("");
+          resolve(reconnectingDeepgramWsRef.current);
+        } else if (status === "reconnecting") {
+          setDeepgramStatus("🔄 Reconnecting...");
+        } else if (status === "disconnected") {
+          setDeepgramStatus("Disconnected");
+        }
       };
 
-      ws.onclose = () => {
-        console.log('🔌 Deepgram closed');
-        setDeepgramStatus("Disconnected");
-      };
+      reconnectingDeepgramWsRef.current = new ReconnectingWebSocket(
+        wsUrl,
+        handleMessage,
+        handleStatusChange,
+        5
+      );
 
-      deepgramWsRef.current = ws;
+      reconnectingDeepgramWsRef.current.connect()
+        .then(() => {
+          deepgramWsRef.current = reconnectingDeepgramWsRef.current.ws;
+        })
+        .catch(reject);
     });
   };
 
@@ -568,7 +589,7 @@ export default function InterviewAssist() {
       candidateProcessorRef.current = processor;
 
       processor.onaudioprocess = (e) => {
-        if (!deepgramWsRef.current || deepgramWsRef.current.readyState !== WebSocket.OPEN || isPaused) return;
+        if (!reconnectingDeepgramWsRef.current || isPaused) return;
 
         const inputData = e.inputBuffer.getChannelData(0);
         const pcm16 = new Int16Array(inputData.length);
@@ -578,10 +599,10 @@ export default function InterviewAssist() {
           pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
         }
 
-        deepgramWsRef.current.send(JSON.stringify({
+        reconnectingDeepgramWsRef.current.send({
           type: 'candidate',
           audio: Array.from(pcm16)
-        }));
+        });
       };
 
       source.connect(processor);
@@ -641,7 +662,7 @@ export default function InterviewAssist() {
       interviewerProcessorRef.current = processor;
 
       processor.onaudioprocess = (e) => {
-        if (!deepgramWsRef.current || deepgramWsRef.current.readyState !== WebSocket.OPEN || isPaused) return;
+        if (!reconnectingDeepgramWsRef.current || isPaused) return;
 
         const inputData = e.inputBuffer.getChannelData(0);
         const pcm16 = new Int16Array(inputData.length);
@@ -651,10 +672,10 @@ export default function InterviewAssist() {
           pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
         }
 
-        deepgramWsRef.current.send(JSON.stringify({
+        reconnectingDeepgramWsRef.current.send({
           type: 'interviewer',
           audio: Array.from(pcm16)
-        }));
+        });
       };
 
       source.connect(processor);
@@ -710,7 +731,6 @@ export default function InterviewAssist() {
         id: Date.now() + Math.random()
       }]);
       
-      // Send final transcript to Q&A before clearing
       if (reconnectingQaWsRef.current) {
         reconnectingQaWsRef.current.send({
           type: "transcript",
@@ -750,10 +770,11 @@ export default function InterviewAssist() {
       interviewerStreamRef.current = null;
     }
 
-    if (deepgramWsRef.current) {
-      deepgramWsRef.current.close();
-      deepgramWsRef.current = null;
+    if (reconnectingDeepgramWsRef.current) {
+      reconnectingDeepgramWsRef.current.close();
+      reconnectingDeepgramWsRef.current = null;
     }
+    deepgramWsRef.current = null;
 
     console.log('✓ Deepgram stopped');
   };
@@ -764,7 +785,6 @@ export default function InterviewAssist() {
 
   const connectQA = () => {
     return new Promise((resolve, reject) => {
-      // ✅ PRODUCTION READY - Dynamic WebSocket URL
       const qaUrl = getWebSocketUrl("/ws/live-interview");
       console.log(`🔗 Connecting to Q&A: ${qaUrl}`);
       
@@ -876,13 +896,14 @@ export default function InterviewAssist() {
         qaUrl,
         handleMessage,
         handleStatusChange,
-        5 // max retries
+        5
       );
 
-      reconnectingQaWsRef.current.connect().catch(reject);
-      
-      // Store reference for compatibility
-      qaWsRef.current = reconnectingQaWsRef.current.ws;
+      reconnectingQaWsRef.current.connect()
+        .then(() => {
+          qaWsRef.current = reconnectingQaWsRef.current.ws;
+        })
+        .catch(reject);
     });
   };
 
@@ -1394,8 +1415,8 @@ export default function InterviewAssist() {
             className={`w-2 h-2 rounded-full ${
               deepgramStatus.includes("Recording")
                 ? "bg-green-500 animate-pulse"
-                : deepgramStatus.includes("Error")
-                ? "bg-red-500"
+                : deepgramStatus.includes("Error") || deepgramStatus.includes("Reconnecting")
+                ? "bg-yellow-500"
                 : "bg-gray-600"
             }`}
           />
@@ -1409,8 +1430,8 @@ export default function InterviewAssist() {
             className={`w-2 h-2 rounded-full ${
               qaStatus.includes("Active")
                 ? "bg-blue-500 animate-pulse"
-                : qaStatus.includes("Error")
-                ? "bg-red-500"
+                : qaStatus.includes("Error") || qaStatus.includes("Reconnecting")
+                ? "bg-yellow-500"
                 : "bg-gray-600"
             }`}
           />
@@ -1481,12 +1502,12 @@ export default function InterviewAssist() {
               </div>
 
               <div className="bg-blue-900/20 border border-blue-800/50 rounded-lg p-4">
-                <h4 className="text-sm font-medium mb-2 text-blue-300">💡 How It Works</h4>
+                <h4 className="text-sm font-medium mb-2 text-blue-300">💡 Render Optimized</h4>
                 <ul className="text-gray-400 text-sm space-y-1 list-disc list-inside">
-                  <li>Deepgram: Real-time transcription (dual-stream)</li>
-                  <li>Q&A: Automatic answer generation from transcripts</li>
-                  <li>Pause: {settings.pauseInterval}s creates new paragraph</li>
-                  <li>Browser-based audio capture (100% client-side)</li>
+                  <li>30s client keepalive (Render 60s timeout)</li>
+                  <li>30s server keepalive (dual protection)</li>
+                  <li>Immediate handshake on connection</li>
+                  <li>Automatic reconnection with backoff</li>
                 </ul>
               </div>
 

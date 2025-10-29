@@ -1,9 +1,8 @@
 """
 Render-Compatible Interview Assistant Backend
-Audio capture: 100% browser-based (no server audio devices needed)
-LEFT PANEL: Deepgram dual-stream transcription display
-RIGHT PANEL: Q&A with Deepgram transcripts (no Whisper, no audio_utils.py)
-✅ ADDED: ping_interval & ping_timeout for both WebSockets
+✅ FIXED: Immediate handshake to prevent Render 60s timeout
+✅ FIXED: 30s keepalive (Render requires < 60s)
+✅ FIXED: Bidirectional traffic on connection
 """
 
 import asyncio
@@ -45,7 +44,8 @@ app.add_middleware(
 # ============================================================================
 
 DEFAULT_MODEL = "gpt-4o-mini"
-KEEPALIVE_INTERVAL = 5
+KEEPALIVE_INTERVAL = 5  # Internal Deepgram keepalive
+RENDER_KEEPALIVE = 30   # ✅ Render requires < 60s
 
 class ConnectionState(Enum):
     DISCONNECTED = "disconnected"
@@ -95,12 +95,11 @@ class DeepgramStream:
         for attempt in range(self.max_retries):
             try:
                 url = get_deepgram_url(self.language)
-                # ✅ ADDED: ping_interval and ping_timeout
                 self.ws = await websockets.connect(
                     url,
                     extra_headers={"Authorization": f"Token {self.api_key}"},
-                    ping_interval=20,  # ✅ Send ping every 20 seconds
-                    ping_timeout=30,   # ✅ Wait 30 seconds for pong response
+                    ping_interval=20,
+                    ping_timeout=30,
                     max_size=10_000_000,
                     close_timeout=5
                 )
@@ -207,12 +206,10 @@ class DualStreamManager:
         )
 
 # ============================================================================
-# TRANSCRIPT ACCUMULATOR FOR Q&A
+# TRANSCRIPT ACCUMULATOR
 # ============================================================================
 
 class TranscriptAccumulator:
-    """Accumulates Deepgram transcripts and detects complete questions"""
-    
     def __init__(self, pause_threshold: float = 2.0):
         self.pause_threshold = pause_threshold
         self.current_paragraph = ""
@@ -222,7 +219,6 @@ class TranscriptAccumulator:
         self.min_question_length = 10
         
     def add_transcript(self, transcript: str, is_final: bool, speech_final: bool) -> Optional[str]:
-        """Add transcript chunk and return complete paragraph if pause detected"""
         current_time = time.time()
         
         if not transcript or not transcript.strip():
@@ -256,7 +252,6 @@ class TranscriptAccumulator:
         return None
     
     def _is_duplicate(self, text: str, threshold: float = 0.85) -> bool:
-        """Check if text is too similar to recent paragraphs"""
         text_lower = text.lower().strip()
         
         for prev in self.complete_paragraphs:
@@ -267,7 +262,6 @@ class TranscriptAccumulator:
         return False
     
     def force_complete(self) -> Optional[str]:
-        """Force completion of current paragraph"""
         if self.current_paragraph and len(self.current_paragraph) >= self.min_question_length:
             complete_text = self.current_paragraph.strip()
             self.current_paragraph = ""
@@ -418,21 +412,50 @@ CANDIDATE CONTEXT:
         return {"has_question": False, "question": None, "answer": None}
 
 # ============================================================================
-# WEBSOCKET: DEEPGRAM DUAL-STREAM (LEFT PANEL)
+# WEBSOCKET: DEEPGRAM DUAL-STREAM
 # ============================================================================
 
 @app.websocket("/ws/dual-transcribe")
 async def websocket_dual_transcribe(websocket: WebSocket):
-    """Deepgram display for Interviewer + Candidate"""
     await websocket.accept()
+    
+    # ✅ CRITICAL: Send immediate data to prevent Render timeout
+    await websocket.send_json({
+        "type": "connection_established",
+        "message": "Deepgram WebSocket ready",
+        "timestamp": time.time()
+    })
+    
     print("\n🎙️ Deepgram connected")
     
     language = websocket.query_params.get("language", "en")
     stream_manager = DualStreamManager(DEEPGRAM_API_KEY, language)
     
+    # ✅ Render keepalive task
+    keepalive_task = None
+    should_keepalive = True
+    
+    async def send_render_keepalive():
+        """Send periodic pings to prevent Render 60s timeout"""
+        try:
+            while should_keepalive:
+                await asyncio.sleep(RENDER_KEEPALIVE)
+                if stream_manager.is_active:
+                    await websocket.send_json({
+                        "type": "keepalive",
+                        "timestamp": time.time()
+                    })
+                    print("🏓 Render keepalive sent")
+        except asyncio.CancelledError:
+            pass
+    
     try:
         await websocket.send_json({"type": "ready", "message": "Deepgram ready"})
         await stream_manager.connect_all()
+        
+        # ✅ Start Render keepalive
+        keepalive_task = asyncio.create_task(send_render_keepalive())
+        
         await websocket.send_json({"type": "connected", "message": "Deepgram streams ready"})
         
         async def handle_audio():
@@ -441,6 +464,21 @@ async def websocket_dual_transcribe(websocket: WebSocket):
                     try:
                         message = await asyncio.wait_for(websocket.receive_text(), timeout=0.1)
                         data = json.loads(message)
+                        
+                        # ✅ Handle client handshake
+                        if data.get("type") == "client_ready":
+                            print(f"✅ Client handshake received at {data.get('timestamp')}")
+                            await websocket.send_json({
+                                "type": "server_ack",
+                                "message": "Handshake confirmed",
+                                "server_time": time.time()
+                            })
+                            continue
+                        
+                        # ✅ Handle client pong
+                        if data.get("type") == "pong":
+                            print("🏓 Client pong received")
+                            continue
                         
                         stream_type = data.get("type")
                         audio_data = data.get("audio")
@@ -515,6 +553,14 @@ async def websocket_dual_transcribe(websocket: WebSocket):
     except Exception as e:
         print(f"❌ Deepgram error: {e}")
     finally:
+        should_keepalive = False
+        if keepalive_task:
+            keepalive_task.cancel()
+            try:
+                await asyncio.wait_for(keepalive_task, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+        
         await stream_manager.close_all()
         try:
             await websocket.close()
@@ -523,20 +569,28 @@ async def websocket_dual_transcribe(websocket: WebSocket):
         print("🔌 Deepgram closed\n")
 
 # ============================================================================
-# WEBSOCKET: Q&A WITH DEEPGRAM TRANSCRIPTS (RIGHT PANEL)
+# WEBSOCKET: Q&A WITH DEEPGRAM TRANSCRIPTS
 # ============================================================================
 
 @app.websocket("/ws/live-interview")
 async def websocket_live_interview(websocket: WebSocket):
-    """Q&A Copilot - processes Deepgram transcripts from frontend"""
     await websocket.accept()
+    
+    # ✅ CRITICAL: Send immediate data to prevent Render timeout
+    await websocket.send_json({
+        "type": "connection_established",
+        "message": "Q&A WebSocket ready",
+        "timestamp": time.time()
+    })
+    
     print("\n🤖 Q&A Copilot connected")
     
     connection_state = ConnectionState.CONNECTED
     state_lock = asyncio.Lock()
     
-    # ✅ ADDED: Ping/pong keepalive task
-    ping_task: Optional[asyncio.Task] = None
+    # ✅ Render keepalive
+    keepalive_task = None
+    should_keepalive = True
     
     async def get_state():
         async with state_lock:
@@ -547,21 +601,22 @@ async def websocket_live_interview(websocket: WebSocket):
         async with state_lock:
             connection_state = new_state
     
-    # ✅ ADDED: Keepalive ping function
-    async def send_keepalive_pings():
-        """Send periodic pings to keep connection alive"""
+    async def send_render_keepalive():
+        """Send periodic pings to prevent Render 60s timeout"""
         try:
-            while await get_state() == ConnectionState.CONNECTED:
-                await asyncio.sleep(20)  # Send ping every 20 seconds
+            while should_keepalive and await get_state() == ConnectionState.CONNECTED:
+                await asyncio.sleep(RENDER_KEEPALIVE)
                 if await get_state() == ConnectionState.CONNECTED:
                     try:
-                        await websocket.send_json({"type": "ping"})
-                        print("🏓 Sent keepalive ping")
+                        await websocket.send_json({
+                            "type": "keepalive",
+                            "timestamp": time.time()
+                        })
+                        print("🏓 Render keepalive sent")
                     except Exception as e:
-                        print(f"❌ Ping failed: {e}")
+                        print(f"❌ Keepalive failed: {e}")
                         break
         except asyncio.CancelledError:
-            print("⏹️ Keepalive task cancelled")
             pass
     
     transcript_accumulator = None
@@ -599,13 +654,28 @@ async def websocket_live_interview(websocket: WebSocket):
     try:
         await safe_send({"type": "ready", "message": "Q&A ready"})
         
-        # ✅ ADDED: Start keepalive ping task
-        ping_task = asyncio.create_task(send_keepalive_pings())
+        # ✅ Start Render keepalive
+        keepalive_task = asyncio.create_task(send_render_keepalive())
         
         while await get_state() == ConnectionState.CONNECTED:
             try:
                 message = await asyncio.wait_for(websocket.receive_text(), timeout=2.0)
                 data = json.loads(message)
+                
+                # ✅ Handle client handshake
+                if data.get("type") == "client_ready":
+                    print(f"✅ Client handshake received at {data.get('timestamp')}")
+                    await safe_send({
+                        "type": "server_ack",
+                        "message": "Handshake confirmed",
+                        "server_time": time.time()
+                    })
+                    continue
+                
+                # ✅ Handle client pong
+                if data.get("type") == "pong":
+                    print("🏓 Client pong received")
+                    continue
                 
                 if data.get("type") == "init":
                     received_settings = data.get("settings", {})
@@ -691,10 +761,6 @@ async def websocket_live_interview(websocket: WebSocket):
                                 })
                             else:
                                 print("⏭️  No question detected")
-                
-                # ✅ ADDED: Handle pong response from client
-                elif data.get("type") == "pong":
-                    print("🏓 Received pong from client")
                     
             except asyncio.TimeoutError:
                 if transcript_accumulator and transcript_accumulator.current_paragraph:
@@ -740,13 +806,13 @@ async def websocket_live_interview(websocket: WebSocket):
         import traceback
         traceback.print_exc()
     finally:
+        should_keepalive = False
         await set_state(ConnectionState.DISCONNECTED)
         
-        # ✅ ADDED: Cancel ping task on disconnect
-        if ping_task and not ping_task.done():
-            ping_task.cancel()
+        if keepalive_task:
+            keepalive_task.cancel()
             try:
-                await asyncio.wait_for(ping_task, timeout=2.0)
+                await asyncio.wait_for(keepalive_task, timeout=2.0)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
         
@@ -755,47 +821,3 @@ async def websocket_live_interview(websocket: WebSocket):
         except:
             pass
         print("🔌 Q&A closed\n")
-
-# ============================================================================
-# API ENDPOINTS
-# ============================================================================
-
-@app.get("/health")
-async def health_check():
-    return {
-        "status": "ok",
-        "message": "Interview Assistant API - Render Compatible",
-        "audio_capture": "browser-based",
-        "server_audio": "not required"
-    }
-
-@app.get("/api/models/status")
-async def get_model_status():
-    return {
-        "default_provider": DEFAULT_MODEL,
-        "available_providers": {"gpt-4o-mini": True, "gpt-4o": True}
-    }
-
-# ============================================================================
-# STARTUP
-# ============================================================================
-
-if __name__ == "__main__":
-    import uvicorn
-    
-    print("\n" + "=" * 70)
-    print("🚀 INTERVIEW ASSISTANT BACKEND (RENDER COMPATIBLE)")
-    print("=" * 70)
-    print("✅ Audio capture: Browser-based (100%)")
-    print("✅ No server audio devices required")
-    print("✅ Deepgram: Real-time transcription with ping/pong keepalive")
-    print("✅ OpenAI: Q&A generation")
-    print("✅ WebSocket keepalive: 20s ping interval")
-    print("=" * 70 + "\n")
-    
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=int(os.getenv("PORT", 8000)),
-        log_level="info"
-    )
