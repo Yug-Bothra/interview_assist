@@ -16,19 +16,7 @@ import {
 import { jsPDF } from "jspdf";
 
 // ============================================================================
-// WEBSOCKET URL CONFIGURATION
-// ============================================================================
-
-const backendBaseUrl =
-  import.meta.env.MODE === "development"
-    ? "ws://127.0.0.1:8000"
-    : "wss://interview-assist-1.onrender.com";
-
-const qaUrl = `${backendBaseUrl}/ws/live-interview`;
-const transcribeUrl = `${backendBaseUrl}/ws/dual-transcribe`;
-
-// ============================================================================
-// RECONNECTING WEBSOCKET CLASS
+// WEBSOCKET RECONNECTION UTILITIES
 // ============================================================================
 
 class ReconnectingWebSocket {
@@ -60,6 +48,7 @@ class ReconnectingWebSocket {
         this.ws.onmessage = (event) => {
           const data = JSON.parse(event.data);
           
+          // Handle server ping
           if (data.type === "ping") {
             this.send({ type: "pong" });
             console.log("🏓 Received ping, sent pong");
@@ -90,6 +79,7 @@ class ReconnectingWebSocket {
   }
 
   startPingPong() {
+    // Send ping every 25 seconds to keep connection alive
     this.pingInterval = setInterval(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.send({ type: "ping" });
@@ -110,6 +100,7 @@ class ReconnectingWebSocket {
       clearTimeout(this.reconnectTimeout);
     }
 
+    // Exponential backoff: 1s, 2s, 4s, 8s, 16s
     const delay = Math.min(1000 * Math.pow(2, this.retryCount), 16000);
     this.retryCount++;
 
@@ -118,7 +109,9 @@ class ReconnectingWebSocket {
 
     this.reconnectTimeout = setTimeout(() => {
       console.log(`🔄 Attempting reconnection...`);
-      this.connect().catch(() => {});
+      this.connect().catch(() => {
+        // Reconnection will be scheduled again by onclose handler
+      });
     }, delay);
   }
 
@@ -127,7 +120,6 @@ class ReconnectingWebSocket {
       this.ws.send(JSON.stringify(data));
       return true;
     }
-    console.warn("⚠️ Cannot send - WebSocket not ready");
     return false;
   }
 
@@ -167,6 +159,7 @@ function StreamingText({ text, isComplete, className = "" }) {
         setDisplayedWords(words.slice(0, currentWordIndex + 1));
         setCurrentWordIndex(currentWordIndex + 1);
       }, 80);
+
       return () => clearTimeout(timer);
     }
   }, [text, currentWordIndex, isComplete]);
@@ -196,6 +189,7 @@ function StreamingAnswer({ text, isComplete }) {
         setDisplayedText(text.slice(0, currentIndex + 1));
         setCurrentIndex(currentIndex + 1);
       }, 20);
+
       return () => clearTimeout(timer);
     }
   }, [text, currentIndex, isComplete]);
@@ -210,16 +204,18 @@ function StreamingAnswer({ text, isComplete }) {
   );
 }
 
+// ============================================================================
+// QA LIST
+// ============================================================================
+
 function QAList({ qaList }) {
   return (
     <div className="space-y-4">
       {qaList.map((item, index) => {
         const questionNumber = index + 1;
+
         return (
-          <div
-            key={item.id}
-            className="bg-gray-900 rounded-lg p-4 border border-gray-800 hover:border-gray-700 transition-colors"
-          >
+          <div key={item.id} className="bg-gray-900 rounded-lg p-4 border border-gray-800 hover:border-gray-700 transition-colors">
             <div className="mb-3">
               <div className="flex items-center gap-2 mb-2">
                 <span className="text-xs font-semibold text-purple-400 bg-purple-900/30 px-2 py-1 rounded">
@@ -228,11 +224,10 @@ function QAList({ qaList }) {
               </div>
               <p className="text-gray-200 font-medium leading-relaxed">{item.question}</p>
             </div>
+
             <div className="border-t border-gray-800 pt-3 mt-3">
               <div className="flex items-center gap-2 mb-2">
-                <span className="text-xs font-semibold text-green-400 bg-green-900/30 px-2 py-1 rounded">
-                  💬 ANSWER
-                </span>
+                <span className="text-xs font-semibold text-green-400 bg-green-900/30 px-2 py-1 rounded">💬 ANSWER</span>
               </div>
               <p className="text-gray-300 whitespace-pre-wrap leading-relaxed">
                 {item.answer}
@@ -277,16 +272,16 @@ export default function InterviewAssist() {
       return saved
         ? JSON.parse(saved)
         : {
-            responseStyle: "professional",
-            audioLanguage: "English",
-            pauseInterval: 2.0,
-            advancedQuestionDetection: true,
-            messageDirection: "bottom",
-            autoScroll: true,
-            programmingLanguage: "Python",
-            selectedResponseStyleId: "concise",
-            defaultModel: "gpt-4o-mini"
-          };
+          responseStyle: "professional",
+          audioLanguage: "English",
+          pauseInterval: 2.0,
+          advancedQuestionDetection: true,
+          messageDirection: "bottom",
+          autoScroll: true,
+          programmingLanguage: "Python",
+          selectedResponseStyleId: "concise",
+          defaultModel: "gpt-4o-mini"
+        };
     } catch {
       return {
         responseStyle: "professional",
@@ -350,14 +345,18 @@ export default function InterviewAssist() {
   const candidateParagraphRef = useRef("");
   const interviewerParagraphRef = useRef("");
 
+  // ============================================================================
   // AUTH CHECK
+  // ============================================================================
   useEffect(() => {
     if (!loading && !user) {
       navigate("/sign-in");
     }
   }, [user, loading, navigate]);
 
+  // ============================================================================
   // AUTO-SCROLL
+  // ============================================================================
   useEffect(() => {
     if (settings.autoScroll) {
       transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -386,7 +385,9 @@ export default function InterviewAssist() {
       };
       const language = languageMap[settings.audioLanguage] || "en";
 
-      const ws = new WebSocket(`${transcribeUrl}?language=${language}`);
+      // 🔧 LOCALHOST URL - Change to production URL for deployment
+      const ws = new WebSocket(`ws://127.0.0.1:8000/ws/dual-transcribe?language=${language}`);
+      // 🚀 PRODUCTION: const ws = new WebSocket(`wss://your-domain.com/ws/dual-transcribe?language=${language}`);
 
       ws.onopen = () => {
         console.log('✓ Deepgram connected');
@@ -402,7 +403,6 @@ export default function InterviewAssist() {
           if (data.type === 'transcript') {
             handleDeepgramTranscript(data);
           } else if (data.type === 'error') {
-            console.error('❌ Deepgram error:', data.message);
             setTabAudioError(data.message);
           } else if (data.type === 'ready' || data.type === 'connected') {
             console.log('✓ Deepgram:', data.message);
@@ -432,8 +432,6 @@ export default function InterviewAssist() {
     const { stream, transcript, is_final, speech_final } = data;
 
     if (!transcript || !transcript.trim()) return;
-
-    console.log(`📝 Transcript [${stream}]:`, transcript.substring(0, 50), { is_final, speech_final });
 
     const pauseInterval = (settings.pauseInterval || 2.0) * 1000;
 
@@ -504,17 +502,15 @@ export default function InterviewAssist() {
               id: Date.now() + Math.random()
             }]);
             
-            // Send to Q&A
+            // ⭐ UPDATED: Send using reconnecting websocket
             if (reconnectingQaWsRef.current) {
-              const sent = reconnectingQaWsRef.current.send({
+              reconnectingQaWsRef.current.send({
                 type: "transcript",
                 transcript: finalText,
                 is_final: true,
                 speech_final: true
               });
-              if (sent) {
-                console.log("📤 Sent to Q&A:", finalText.substring(0, 50) + "...");
-              }
+              console.log("📤 Sent to Q&A:", finalText.substring(0, 50) + "...");
             }
             
             interviewerParagraphRef.current = '';
@@ -552,8 +548,6 @@ export default function InterviewAssist() {
       const processor = audioContext.createScriptProcessor(4096, 1, 1);
       candidateProcessorRef.current = processor;
 
-      let audioChunkCount = 0;
-
       processor.onaudioprocess = (e) => {
         if (!deepgramWsRef.current || deepgramWsRef.current.readyState !== WebSocket.OPEN || isPaused) return;
 
@@ -569,11 +563,6 @@ export default function InterviewAssist() {
           type: 'candidate',
           audio: Array.from(pcm16)
         }));
-
-        audioChunkCount++;
-        if (audioChunkCount % 50 === 0) {
-          console.log(`📤 Sent ${audioChunkCount} candidate audio chunks`);
-        }
       };
 
       source.connect(processor);
@@ -632,8 +621,6 @@ export default function InterviewAssist() {
       const processor = audioContext.createScriptProcessor(4096, 1, 1);
       interviewerProcessorRef.current = processor;
 
-      let audioChunkCount = 0;
-
       processor.onaudioprocess = (e) => {
         if (!deepgramWsRef.current || deepgramWsRef.current.readyState !== WebSocket.OPEN || isPaused) return;
 
@@ -649,11 +636,6 @@ export default function InterviewAssist() {
           type: 'interviewer',
           audio: Array.from(pcm16)
         }));
-
-        audioChunkCount++;
-        if (audioChunkCount % 50 === 0) {
-          console.log(`📤 Sent ${audioChunkCount} interviewer audio chunks`);
-        }
       };
 
       source.connect(processor);
@@ -709,6 +691,7 @@ export default function InterviewAssist() {
         id: Date.now() + Math.random()
       }]);
       
+      // Send final transcript to Q&A before clearing
       if (reconnectingQaWsRef.current) {
         reconnectingQaWsRef.current.send({
           type: "transcript",
@@ -762,6 +745,10 @@ export default function InterviewAssist() {
 
   const connectQA = () => {
     return new Promise((resolve, reject) => {
+      // 🔧 LOCALHOST URL - Change to production URL for deployment
+      const qaUrl = "ws://127.0.0.1:8000/ws/live-interview";
+      // 🚀 PRODUCTION: const qaUrl = "wss://your-domain.com/ws/live-interview";
+      
       const handleMessage = (event) => {
         try {
           const data = JSON.parse(event.data);
@@ -830,6 +817,7 @@ export default function InterviewAssist() {
         if (status === "connected") {
           setQaStatus("Initializing...");
           
+          // Send init message
           const initMessage = {
             type: "init",
             domain: domain || "Technical",
@@ -856,13 +844,7 @@ export default function InterviewAssist() {
             }
           };
 
-          setTimeout(() => {
-            if (reconnectingQaWsRef.current) {
-              reconnectingQaWsRef.current.send(initMessage);
-              console.log("📤 Sent init message to Q&A");
-            }
-          }, 100);
-          
+          reconnectingQaWsRef.current?.send(initMessage);
           resolve(reconnectingQaWsRef.current);
         } else if (status === "reconnecting") {
           setQaStatus("🔄 Reconnecting...");
@@ -875,10 +857,12 @@ export default function InterviewAssist() {
         qaUrl,
         handleMessage,
         handleStatusChange,
-        5
+        5 // max retries
       );
 
       reconnectingQaWsRef.current.connect().catch(reject);
+      
+      // Store reference for compatibility
       qaWsRef.current = reconnectingQaWsRef.current.ws;
     });
   };
@@ -1341,7 +1325,9 @@ export default function InterviewAssist() {
 
                     <div className="border-t border-purple-500/30 pt-4">
                       <div className="flex items-center gap-2 mb-3">
-                        <span className="text-xs font-semibold text-green-300 bg-green-900/50 px-3 py-1 rounded-full">💬 ANSWER</span>
+                        <span className="text-xs font-semibold text-green-300 bg-green-900/50 px-3 py-1 rounded-full">
+                          💬 ANSWER
+                        </span>
                         {isGenerating && !currentAnswer && (
                           <span className="text-xs text-purple-300 flex items-center gap-1">
                             <span className="w-2 h-2 bg-purple-400 rounded-full animate-pulse"></span>
