@@ -250,6 +250,19 @@ class TranscriptAccumulator:
         if not transcript or not transcript.strip():
             return None
         
+        # If we receive a complete final transcript, process it immediately
+        if (is_final or speech_final) and len(transcript.strip()) >= self.min_question_length:
+            print(f"✅ Processing complete transcript immediately: {transcript[:100]}...")
+            
+            # Check for duplicates
+            if not self._is_duplicate(transcript.strip()):
+                self.complete_paragraphs.append(transcript.strip().lower())
+                return transcript.strip()
+            else:
+                print(f"⏭️ Skipping duplicate: {transcript[:50]}...")
+                return None
+        
+        # Otherwise, use paragraph accumulation logic
         if is_final or speech_final:
             if self.current_paragraph:
                 self.current_paragraph += " " + transcript.strip()
@@ -366,6 +379,8 @@ async def process_transcript_with_ai(
     custom_style_prompt: Optional[str] = None
 ) -> Dict[str, Any]:
     try:
+        print(f"🤖 AI Processing transcript: {transcript[:100]}...")
+        
         response_style_id = settings.get("selectedResponseStyleId", "concise")
         
         if custom_style_prompt:
@@ -399,6 +414,8 @@ CANDIDATE CONTEXT:
         
         model = settings.get("defaultModel", DEFAULT_MODEL)
         
+        print(f"🤖 Calling OpenAI with model: {model}")
+        
         response = await asyncio.to_thread(
             lambda: openai.chat.completions.create(
                 model=model,
@@ -413,8 +430,10 @@ CANDIDATE CONTEXT:
         )
         
         result_text = response.choices[0].message.content.strip()
+        print(f"🤖 OpenAI response: {result_text[:200]}...")
         
         if result_text.upper() == "SKIP" or "SKIP" in result_text.upper():
+            print("⏭️ Skipping - not a question")
             return {"has_question": False, "question": None, "answer": None}
         
         question = None
@@ -424,9 +443,11 @@ CANDIDATE CONTEXT:
             parts = result_text.split("ANSWER:", 1)
             question = parts[0].replace("QUESTION:", "").strip()
             answer = parts[1].strip() if len(parts) > 1 else ""
+            print(f"✅ Extracted Q: {question[:50]}... A: {answer[:50]}...")
         else:
             question = transcript
             answer = result_text
+            print(f"✅ Using full response - Q: {question[:50]}... A: {answer[:50]}...")
         
         return {
             "has_question": True,
@@ -435,6 +456,8 @@ CANDIDATE CONTEXT:
         }
     except Exception as e:
         print(f"❌ AI error: {e}")
+        import traceback
+        traceback.print_exc()
         return {"has_question": False, "question": None, "answer": None}
 
 # ============================================================================
@@ -761,11 +784,14 @@ async def websocket_live_interview(websocket: WebSocket):
                 
                 elif data.get("type") == "transcript":
                     if not transcript_accumulator:
+                        print("⚠️ No transcript accumulator - Q&A not initialized")
                         continue
                     
                     transcript = data.get("transcript", "")
                     is_final = data.get("is_final", False)
                     speech_final = data.get("speech_final", False)
+                    
+                    print(f"📝 Received transcript: {transcript[:100]}... (final={is_final}, speech_final={speech_final})")
                     
                     complete_paragraph = transcript_accumulator.add_transcript(
                         transcript, 
@@ -774,12 +800,17 @@ async def websocket_live_interview(websocket: WebSocket):
                     )
                     
                     if complete_paragraph:
+                        print(f"📋 Complete paragraph detected: {complete_paragraph[:100]}...")
+                        
                         if processing_lock.locked():
+                            print("⏳ Already processing, skipping...")
                             continue
                         
                         async with processing_lock:
                             if any(complete_paragraph.lower() == prev.lower() for prev in prev_questions):
                                 continue
+                            
+                            print(f"🔍 Processing: {complete_paragraph[:100]}...")
                             
                             result = await process_transcript_with_ai(
                                 complete_paragraph, 
@@ -788,9 +819,12 @@ async def websocket_live_interview(websocket: WebSocket):
                                 custom_style_prompt
                             )
                             
+                            print(f"📊 Result: has_question={result['has_question']}, question={result.get('question', 'None')[:50] if result.get('question') else 'None'}...")
+                            
                             if result["has_question"]:
                                 prev_questions.append(complete_paragraph)
                                 
+                                print(f"✅ Sending question: {result['question'][:100]}...")
                                 await safe_send({
                                     "type": "question_detected",
                                     "question": result["question"]
@@ -798,11 +832,13 @@ async def websocket_live_interview(websocket: WebSocket):
                                 
                                 await asyncio.sleep(0.1)
                                 
+                                print(f"✅ Sending answer: {result['answer'][:100]}...")
                                 await safe_send({
                                     "type": "answer_ready",
                                     "question": result["question"],
                                     "answer": result["answer"]
                                 })
+                                print("✅ Q&A sent successfully")
                     
             except asyncio.TimeoutError:
                 continue
