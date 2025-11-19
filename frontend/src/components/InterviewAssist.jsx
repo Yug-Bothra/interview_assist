@@ -19,16 +19,18 @@ import { jsPDF } from "jspdf";
 // WEBSOCKET URL CONFIGURATION - PRODUCTION READY
 // ============================================================================
 
-const BACKEND_URL = "interview-assist-1.onrender.com";
+const BACKEND_URL = "https://verve-ai-ukec.onrender.com";
+const WS_URL = "wss://verve-ai-ukec.onrender.com";
 
 const getWebSocketUrl = (path) => {
-  const isDevelopment = window.location.hostname === 'localhost' || 
-                        window.location.hostname === '127.0.0.1';
-  
+  const isDevelopment =
+    window.location.hostname === "localhost" ||
+    window.location.hostname === "127.0.0.1";
+
   if (isDevelopment) {
     return `ws://127.0.0.1:8000${path}`;
   } else {
-    return `wss://${BACKEND_URL}${path}`;
+    return `${WS_URL}${path}`;
   }
 };
 

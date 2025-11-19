@@ -11,16 +11,24 @@ import PersonasPage from "./components/InterviewAssistent/PersonasPage";
 import SignIn from "./components/Auth/SignIn";
 import SignUp from "./components/Auth/SignUp";
 
+// Resources
+import Blog from "./components/Resources/Blog/Blog";
+import ResumeBuilder from "./components/Resources/Blog/ResumeBuilder";   // ✅ Added
+
 function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
         <Routes>
+
           {/* Public Routes */}
           <Route path="/" element={<LandingPage />} />
           <Route path="/pricing" element={<Pricing />} />
           <Route path="/sign-in" element={<SignIn />} />
           <Route path="/sign-up" element={<SignUp />} />
+
+          <Route path="/blog" element={<Blog />} />                    {/* ✅ Blog */}
+          <Route path="/resume-builder" element={<ResumeBuilder />} /> {/* ✅ Resume Builder */}
 
           {/* Protected Routes */}
           <Route
@@ -31,6 +39,7 @@ function App() {
               </ProtectedRoute>
             }
           />
+
           <Route
             path="/interview-assist"
             element={
@@ -39,6 +48,7 @@ function App() {
               </ProtectedRoute>
             }
           />
+
           <Route
             path="/personas"
             element={
@@ -47,6 +57,7 @@ function App() {
               </ProtectedRoute>
             }
           />
+
         </Routes>
       </BrowserRouter>
     </AuthProvider>

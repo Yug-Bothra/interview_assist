@@ -25,12 +25,13 @@ export default function Hero() {
           AI Interview Copilot
         </p>
 
-        <button
-          onClick={() => navigate("/interview-assist")}
+          <button
+          onClick={() => navigate("/interview")}
           className="px-8 py-4 bg-indigo-900 text-white rounded-xl font-semibold text-lg hover:bg-indigo-800 transition-all shadow-lg hover:shadow-xl transform hover:scale-105"
-        >
+          >
           Start Now for Free
-        </button>
+          </button>
+
 
         {/* Stats */}
         <div className="grid grid-cols-3 gap-8 mt-20 max-w-3xl">

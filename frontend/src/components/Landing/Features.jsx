@@ -1,6 +1,10 @@
-import React from "react";
+import React, { useState } from "react";
+import { useNavigate } from "react-router-dom";
 
 export default function Features() {
+  const navigate = useNavigate();
+  const [activeCategory, setActiveCategory] = useState("Software");
+
   const features = [
     {
       icon: "✨",
@@ -26,13 +30,92 @@ export default function Features() {
       icon: "✨",
       label: "Support 25+ Languages",
       title: "Multilingual transcription and real-time interview guidance",
-      description:
-        "Get real-time, personalized interview support in any language",
+      description: "Get real-time, personalized interview support in any language",
       image:
         "https://framerusercontent.com/images/pCbPcBMqDxcXgPZ5NEHMCCAy7Y.png?scale-down-to=1024&width=1266&height=1256",
       color: "blue",
     },
   ];
+
+  const jobRolesData = {
+    Software: [
+      "Software Engineer",
+      "Backend Developer",
+      "Frontend Developer",
+      "Full-Stack Developer",
+      "Mobile Application Developer",
+      "DevOps Engineer",
+      "Machine Learning Engineer",
+      "Systems Software Engineer",
+      "Cloud Engineer",
+    ],
+    Product: [
+      "Product Manager",
+      "Product Owner",
+      "Product Analyst",
+      "Technical Product Manager",
+      "Project Manager",
+      "UX/Product Researcher",
+      "Product Designer",
+      "Product Marketing Manager",
+      "Growth Product Manager",
+    ],
+    Consulting: [
+      "Management Consultant",
+      "Strategy Consultant",
+      "Engagement Manager",
+      "Associate Consultant",
+      "Operations Consultant",
+      "Business Analyst",
+      "IT Consultant",
+      "Project Manager",
+      "Delivery Manager",
+    ],
+    Data: [
+      "Data Analyst",
+      "Data Scientist",
+      "Data Engineer",
+      "Business Analyst",
+      "Business Intelligence Engineer",
+      "Big Data Engineer",
+      "Data Visualization Engineer",
+      "Machine Learning Engineer",
+      "Data Operations Engineer",
+    ],
+    Marketing: [
+      "Marketing Analyst",
+      "Growth Marketing Manager",
+      "Digital Marketing Specialist",
+      "Social Media Manager",
+      "Brand Manager",
+      "Content Marketing Manager",
+      "Email Marketing Specialist",
+      "Product Marketing Manager",
+      "SEO Specialist",
+    ],
+    Finance: [
+      "Financial Analyst",
+      "Investment Analyst",
+      "Credit Analyst",
+      "Risk Analyst",
+      "Portfolio Manager",
+      "Wealth Manager",
+      "Investment Banker",
+      "Equity Research Analyst",
+      "Corporate Finance Associate",
+    ],
+  };
+
+  const categories = ["Software", "Product", "Consulting", "Data", "Marketing", "Finance"];
+
+  const categoryIcons = {
+    Software: "💻",
+    Product: "📦",
+    Consulting: "🏢",
+    Data: "📊",
+    Marketing: "📈",
+    Finance: "💰",
+  };
 
   return (
     <section className="py-20 bg-white">
@@ -48,13 +131,14 @@ export default function Features() {
               <div className="inline-block px-4 py-2 bg-indigo-50 text-indigo-600 rounded-full text-sm font-medium mb-4">
                 {feature.icon} {feature.label}
               </div>
-              <h2 className="text-4xl font-bold text-gray-900 mb-4">
-                {feature.title}
-              </h2>
-              <p className="text-lg text-gray-600 mb-6">
-                {feature.description}
-              </p>
-              <button className="px-6 py-3 bg-lime-300 text-gray-900 rounded-lg font-semibold hover:bg-lime-400 transition-colors">
+              <h2 className="text-4xl font-bold text-gray-900 mb-4">{feature.title}</h2>
+              <p className="text-lg text-gray-600 mb-6">{feature.description}</p>
+
+              {/* ⭐ Redirect to Interview Dashboard */}
+              <button
+                onClick={() => navigate("/interview")}
+                className="px-6 py-3 bg-lime-300 text-gray-900 rounded-lg font-semibold hover:bg-lime-400 transition-colors"
+              >
                 Start Free Trial
               </button>
             </div>
@@ -69,11 +153,7 @@ export default function Features() {
                     : "from-blue-100 to-indigo-100"
                 } rounded-2xl shadow-xl flex items-center justify-center overflow-hidden`}
               >
-                <img
-                  src={feature.image}
-                  alt={feature.label}
-                  className="w-full h-full object-cover"
-                />
+                <img src={feature.image} alt={feature.label} className="w-full h-full object-cover" />
               </div>
             </div>
           </div>
@@ -87,34 +167,26 @@ export default function Features() {
             Upgrade to Pro to Unlock All Add-Ons
           </p>
           <h2 className="text-5xl font-bold mb-4">
-            <span className="text-indigo-600">AI Interview Copilot</span> with
-            Expertise Across 100+ Industries
+            <span className="text-indigo-600">AI Interview Copilot</span> with Expertise Across 100+ Industries
           </h2>
           <p className="text-gray-600 text-lg max-w-4xl mx-auto">
-            Supercharge your AI Interview Copilot with insights from 100+
-            industries, including trends, news, tailored interview formats, and
-            job opportunities
+            Supercharge your AI Interview Copilot with insights from 100+ industries
           </p>
         </div>
 
         {/* Category Tabs */}
         <div className="flex flex-wrap justify-center gap-3 mb-12">
-          {[
-            "Software",
-            "Product",
-            "Consulting",
-            "Data",
-            "Marketing",
-            "Finance",
-          ].map((cat) => (
+          {categories.map((cat) => (
             <button
               key={cat}
-              className={`px-6 py-2.5 rounded-full font-medium transition-colors ${
-                cat === "Product"
+              onClick={() => setActiveCategory(cat)}
+              className={`px-6 py-2.5 rounded-full font-medium transition-colors flex items-center gap-2 ${
+                cat === activeCategory
                   ? "bg-indigo-600 text-white"
                   : "bg-gray-100 text-gray-700 hover:bg-gray-200"
               }`}
             >
+              <span>{categoryIcons[cat]}</span>
               {cat}
             </button>
           ))}
@@ -122,23 +194,15 @@ export default function Features() {
 
         {/* Job Roles Grid */}
         <div className="grid md:grid-cols-3 gap-6">
-          {[
-            "Product Manager",
-            "Product Owner",
-            "Product Analyst",
-            "Technical Product Manager",
-            "Project Manager",
-            "UX/Product Researcher",
-            "Product Designer",
-            "Product Marketing Manager",
-            "Growth Product Manager",
-          ].map((role) => (
-            <div
-              key={role}
-              className="bg-indigo-50 rounded-xl p-6 hover:shadow-lg transition-shadow"
-            >
+          {jobRolesData[activeCategory].map((role) => (
+            <div key={role} className="bg-indigo-50 rounded-xl p-6 hover:shadow-lg transition-shadow">
               <h3 className="text-xl font-bold text-gray-900 mb-4">{role}</h3>
-              <button className="px-4 py-2 bg-white rounded-lg font-medium text-gray-700 hover:bg-gray-50 transition-colors shadow-sm">
+
+              {/* ⭐ Redirect to Interview Dashboard */}
+              <button
+                onClick={() => navigate("/interview")}
+                className="px-4 py-2 bg-white rounded-lg font-medium text-gray-700 hover:bg-gray-50 transition-colors shadow-sm"
+              >
                 Try now
               </button>
             </div>

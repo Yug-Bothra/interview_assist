@@ -4,10 +4,10 @@ import React, { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../Auth/AuthContext";
 
-
-// Features Dropdown Component (keeping same as before)
+// -------------------- FEATURES DROPDOWN --------------------
 const FeaturesDropdown = ({ isOpen, onClose }) => {
   const dropdownRef = useRef(null);
+  const navigate = useNavigate();   // ✅ Added
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -15,21 +15,32 @@ const FeaturesDropdown = ({ isOpen, onClose }) => {
         onClose();
       }
     };
-    if (isOpen) {
-      document.addEventListener("mousedown", handleClickOutside);
-    }
+    if (isOpen) document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
   return (
-    <div ref={dropdownRef} className="absolute top-full left-1/2 transform -translate-x-1/2 mt-2 w-[600px] bg-white rounded-xl shadow-2xl border border-gray-100 p-6">
+    <div
+      ref={dropdownRef}
+      className="absolute top-full left-1/2 transform -translate-x-1/2 mt-2 w-[600px] bg-white rounded-xl shadow-2xl border border-gray-100 p-6"
+    >
       <div className="grid grid-cols-2 gap-6">
+        
+        {/* ---- INTERVIEW COPILOT ---- */}
         <div>
-          <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">INTERVIEW COPILOT</h3>
+          <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">
+            INTERVIEW COPILOT
+          </h3>
+
           <div className="space-y-3">
-            <div className="flex items-start gap-3 p-2 rounded-lg hover:bg-gray-50 cursor-pointer transition-colors">
+
+            {/* AI Mock Interview */}
+            <div
+              onClick={() => navigate("/interview")}   // ✅ Redirect added
+              className="flex items-start gap-3 p-2 rounded-lg hover:bg-gray-50 cursor-pointer transition-colors"
+            >
               <div className="w-8 h-8 bg-indigo-100 rounded flex items-center justify-center flex-shrink-0">
                 <svg className="w-4 h-4 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
@@ -42,10 +53,20 @@ const FeaturesDropdown = ({ isOpen, onClose }) => {
             </div>
           </div>
         </div>
+
+        {/* ---- FREE TOOLS ---- */}
         <div>
-          <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">FREE TOOLS</h3>
+          <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">
+            FREE TOOLS
+          </h3>
+
           <div className="space-y-3">
-            <div className="flex items-start gap-3 p-2 rounded-lg hover:bg-gray-50 cursor-pointer transition-colors">
+
+            {/* AI Resume Builder */}
+            <div
+              onClick={() => navigate("/resume-builder")}   // ✅ Redirect added
+              className="flex items-start gap-3 p-2 rounded-lg hover:bg-gray-50 cursor-pointer transition-colors"
+            >
               <div className="w-8 h-8 bg-purple-100 rounded flex items-center justify-center flex-shrink-0">
                 <svg className="w-4 h-4 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -55,36 +76,43 @@ const FeaturesDropdown = ({ isOpen, onClose }) => {
                 <h4 className="font-semibold text-gray-900 text-sm">AI Resume Builder</h4>
               </div>
             </div>
+
           </div>
         </div>
+
       </div>
     </div>
   );
 };
 
-// Resources Dropdown Component (simplified version)
-const ResourcesDropdown = ({ isOpen, onClose }) => {
+// -------------------- RESOURCES DROPDOWN --------------------
+const ResourcesDropdown = ({ isOpen, onClose, onBlogClick }) => {
   const dropdownRef = useRef(null);
 
   useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
-        onClose();
-      }
+    const handler = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) onClose();
     };
-    if (isOpen) {
-      document.addEventListener("mousedown", handleClickOutside);
-    }
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    if (isOpen) document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
   }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
   return (
-    <div ref={dropdownRef} className="absolute top-full left-1/2 transform -translate-x-1/2 mt-2 w-[400px] bg-white rounded-xl shadow-2xl border border-gray-100 p-6">
-      <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">RESOURCES</h3>
+    <div
+      ref={dropdownRef}
+      className="absolute top-full left-1/2 transform -translate-x-1/2 mt-2 w-[400px] bg-white rounded-xl shadow-2xl border border-gray-100 p-6"
+    >
+      <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">
+        RESOURCES
+      </h3>
+
       <div className="space-y-3">
-        <div className="flex items-start gap-3 p-2 rounded-lg hover:bg-gray-50 cursor-pointer transition-colors">
+        <div
+          onClick={onBlogClick}
+          className="flex items-start gap-3 p-2 rounded-lg hover:bg-gray-50 cursor-pointer transition-colors"
+        >
           <div className="w-8 h-8 bg-indigo-100 rounded flex items-center justify-center flex-shrink-0">
             <svg className="w-4 h-4 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
@@ -100,25 +128,23 @@ const ResourcesDropdown = ({ isOpen, onClose }) => {
   );
 };
 
-// User Menu Dropdown
+// -------------------- USER MENU --------------------
 const UserMenu = ({ user, onSignOut }) => {
   const [isOpen, setIsOpen] = useState(false);
   const menuRef = useRef(null);
   const navigate = useNavigate();
 
   useEffect(() => {
-    const handleClickOutside = (event) => {
+    const handler = (event) => {
       if (menuRef.current && !menuRef.current.contains(event.target)) {
         setIsOpen(false);
       }
     };
-    if (isOpen) {
-      document.addEventListener("mousedown", handleClickOutside);
-    }
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    if (isOpen) document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
   }, [isOpen]);
 
-  const firstLetter = user?.email?.[0]?.toUpperCase() || 'U';
+  const firstLetter = user?.email?.[0]?.toUpperCase() || "U";
 
   return (
     <div className="relative" ref={menuRef}>
@@ -132,11 +158,14 @@ const UserMenu = ({ user, onSignOut }) => {
       {isOpen && (
         <div className="absolute right-0 mt-2 w-56 bg-white rounded-xl shadow-2xl border border-gray-100 py-2">
           <div className="px-4 py-3 border-b border-gray-100">
-            <p className="text-sm font-medium text-gray-900 truncate">{user?.email}</p>
+            <p className="text-sm font-medium text-gray-900 truncate">
+              {user?.email}
+            </p>
           </div>
+
           <button
             onClick={() => {
-              navigate('/interview');
+              navigate("/interview");
               setIsOpen(false);
             }}
             className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
@@ -145,13 +174,14 @@ const UserMenu = ({ user, onSignOut }) => {
           </button>
           <button
             onClick={() => {
-              navigate('/personas');
+              navigate("/personas");
               setIsOpen(false);
             }}
             className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
           >
             Manage Personas
           </button>
+
           <div className="border-t border-gray-100 mt-2 pt-2">
             <button
               onClick={onSignOut}
@@ -166,54 +196,83 @@ const UserMenu = ({ user, onSignOut }) => {
   );
 };
 
-// Main Navbar Component
+// -------------------- NAVBAR --------------------
 export default function Navbar() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
+
   const [scrolled, setScrolled] = useState(false);
   const [featuresOpen, setFeaturesOpen] = useState(false);
   const [resourcesOpen, setResourcesOpen] = useState(false);
 
   useEffect(() => {
-    const handleScroll = () => {
-      setScrolled(window.scrollY > 20);
-    };
-    window.addEventListener("scroll", handleScroll);
-    return () => window.removeEventListener("scroll", handleScroll);
+    const handler = () => setScrolled(window.scrollY > 20);
+    window.addEventListener("scroll", handler);
+    return () => window.removeEventListener("scroll", handler);
   }, []);
 
   const handleSignOut = async () => {
     await signOut();
-    navigate('/');
+    navigate("/");
+  };
+
+  const handleBlogClick = () => {
+    setResourcesOpen(false);
+    navigate("/blog");
   };
 
   return (
-    <nav className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 ${scrolled ? "bg-white shadow-md" : "bg-white/80 backdrop-blur-md"}`}>
+    <nav
+      className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 ${
+        scrolled ? "bg-white shadow-md" : "bg-white/80 backdrop-blur-md"
+      }`}
+    >
       <div className="max-w-7xl mx-auto px-6 py-4">
         <div className="flex justify-between items-center">
-          <div className="flex items-center gap-2 cursor-pointer" onClick={() => navigate("/")}>
+
+          {/* Logo */}
+          <div
+            className="flex items-center gap-2 cursor-pointer"
+            onClick={() => navigate("/")}
+          >
             <div className="w-8 h-8 bg-gray-900 rounded flex items-center justify-center">
-              <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+              <svg
+                className="w-5 h-5 text-white"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M13 10V3L4 14h7v7l9-11h-7z"
+                />
               </svg>
             </div>
-            <span className="text-xl font-bold text-gray-900">InterviewAI</span>
+            <span className="text-xl font-bold text-gray-900">
+              InterviewAI
+            </span>
           </div>
 
+          {/* Menu */}
           <div className="hidden md:flex items-center gap-8">
+
             <span
               onClick={() => navigate("/interview")}
               className="text-indigo-600 font-medium hover:text-indigo-700 cursor-pointer"
             >
               Interview Copilot
             </span>
+
             <span
               onClick={() => navigate("/pricing")}
               className="text-gray-700 font-medium hover:text-gray-900 cursor-pointer"
             >
               Pricing
             </span>
-            
+
+            {/* Features */}
             <div className="relative">
               <span
                 onClick={() => {
@@ -223,13 +282,30 @@ export default function Navbar() {
                 className="text-gray-700 font-medium hover:text-gray-900 cursor-pointer flex items-center gap-1"
               >
                 Features
-                <svg className={`w-4 h-4 transition-transform ${featuresOpen ? "rotate-180" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                <svg
+                  className={`w-4 h-4 transition-transform ${
+                    featuresOpen ? "rotate-180" : ""
+                  }`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M19 9l-7 7-7-7"
+                  />
                 </svg>
               </span>
-              <FeaturesDropdown isOpen={featuresOpen} onClose={() => setFeaturesOpen(false)} />
+
+              <FeaturesDropdown
+                isOpen={featuresOpen}
+                onClose={() => setFeaturesOpen(false)}
+              />
             </div>
 
+            {/* Resources */}
             <div className="relative">
               <span
                 onClick={() => {
@@ -239,14 +315,32 @@ export default function Navbar() {
                 className="text-gray-700 font-medium hover:text-gray-900 cursor-pointer flex items-center gap-1"
               >
                 Resources
-                <svg className={`w-4 h-4 transition-transform ${resourcesOpen ? "rotate-180" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                <svg
+                  className={`w-4 h-4 transition-transform ${
+                    resourcesOpen ? "rotate-180" : ""
+                  }`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M19 9l-7 7-7-7"
+                  />
                 </svg>
               </span>
-              <ResourcesDropdown isOpen={resourcesOpen} onClose={() => setResourcesOpen(false)} />
+
+              <ResourcesDropdown
+                isOpen={resourcesOpen}
+                onClose={() => setResourcesOpen(false)}
+                onBlogClick={handleBlogClick}
+              />
             </div>
           </div>
 
+          {/* Auth Button */}
           {!user ? (
             <button
               onClick={() => navigate("/sign-in")}

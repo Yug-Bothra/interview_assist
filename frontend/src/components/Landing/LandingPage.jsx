@@ -2,7 +2,7 @@ import React from "react";
 import Hero from "./Hero";
 import Features from "./Features";
 import ToolsSection from "./ToolsSection";
-import Pricing from "../Payment/Pricing";  // fixed import
+import FAQ from "./FAQ";
 import CTASection from "./CTASection";
 import Footer from "./Footer";
 import Navbar from "./Navbar";
@@ -14,7 +14,7 @@ export default function LandingPage() {
       <Hero />
       <Features />
       <ToolsSection />
-      <Pricing />
+      <FAQ />
       <CTASection />
       <Footer />
     </div>

@@ -1,6 +1,9 @@
 import React from "react";
+import { useNavigate } from "react-router-dom";
 
 export default function ToolsSection() {
+  const navigate = useNavigate();
+
   const tools = [
     { 
       title: "AI Mock Interview", 
@@ -36,7 +39,7 @@ export default function ToolsSection() {
               key={tool.title} 
               className="bg-white rounded-2xl p-6 shadow-lg hover:shadow-xl transition-shadow flex flex-col w-80 h-[480px]"
             >
-              {/* Taller image */}
+              {/* Image */}
               <div className="w-full h-64 rounded-xl mb-6 overflow-hidden">
                 <img 
                   src={tool.img} 
@@ -44,11 +47,18 @@ export default function ToolsSection() {
                   className="w-full h-full object-cover rounded-xl"
                 />
               </div>
+
               <h3 className="text-xl font-bold text-gray-900 mb-2">{tool.title}</h3>
               <p className="text-gray-600 mb-4 flex-grow">{tool.desc}</p>
-              <button className="px-6 py-2 bg-gray-900 text-white rounded-lg font-medium hover:bg-gray-800 transition-colors">
+
+              {/* Updated Button with Navigate */}
+              <button
+                onClick={() => navigate("/interview")}
+                className="px-6 py-2 bg-gray-900 text-white rounded-lg font-medium hover:bg-gray-800 transition-colors"
+              >
                 Try now
               </button>
+
             </div>
           ))}
         </div>
