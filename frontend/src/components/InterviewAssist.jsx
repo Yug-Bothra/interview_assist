@@ -11,16 +11,21 @@ import {
   Volume2,
   X,
   AlertCircle,
-  MicOff
+  MicOff,
 } from "lucide-react";
 import { jsPDF } from "jspdf";
+import MarkdownRenderer from "./MarkdownRenderer";
+
 
 // ============================================================================
 // WEBSOCKET URL CONFIGURATION - PRODUCTION READY
 // ============================================================================
 
-const BACKEND_URL = "https://verve-ai-ukec.onrender.com";
-const WS_URL = "wss://verve-ai-ukec.onrender.com";
+// const BACKEND_URL = "https://verve-ai-ukec.onrender.com";
+// const WS_URL = "wss://verve-ai-ukec.onrender.com";
+
+const BACKEND_URL = "http://0.0.0.0:8000";
+const WS_URL = "wss://0.0.0.0:8000";
 
 const getWebSocketUrl = (path) => {
   const isDevelopment =
@@ -61,42 +66,42 @@ class ReconnectingWebSocket {
           console.log(`✅ Connected: ${this.url}`);
           this.retryCount = 0;
           this.onStatusChange?.("connected");
-          
+
           // ✅ CRITICAL: Send immediate handshake to prevent Render timeout
           // Use setTimeout to ensure WebSocket is fully ready
           setTimeout(() => {
             this.send({
               type: "client_ready",
-              timestamp: Date.now()
+              timestamp: Date.now(),
             });
             console.log("📤 Sent immediate handshake to:", this.url);
           }, 100);
-          
+
           this.startPingPong();
           resolve(this.ws);
         };
 
         this.ws.onmessage = (event) => {
           const data = JSON.parse(event.data);
-          
+
           // Handle server keepalive ping
           if (data.type === "keepalive") {
             console.log("🏓 Received server keepalive");
             return;
           }
-          
+
           // Handle server acknowledgment
           if (data.type === "server_ack") {
             console.log("✅ Server acknowledged handshake");
             return;
           }
-          
+
           // Handle connection established
           if (data.type === "connection_established") {
             console.log("✅ Connection established:", data.message);
             return;
           }
-          
+
           this.onMessage?.(event);
         };
 
@@ -106,10 +111,14 @@ class ReconnectingWebSocket {
         };
 
         this.ws.onclose = (event) => {
-          console.log(`🔌 Connection closed: ${this.url}`, event.code, event.reason);
+          console.log(
+            `🔌 Connection closed: ${this.url}`,
+            event.code,
+            event.reason
+          );
           this.stopPingPong();
           this.onStatusChange?.("disconnected");
-          
+
           if (this.shouldReconnect && this.retryCount < this.maxRetries) {
             this.scheduleReconnect();
           }
@@ -145,7 +154,9 @@ class ReconnectingWebSocket {
     const delay = Math.min(1000 * Math.pow(2, this.retryCount), 16000);
     this.retryCount++;
 
-    console.log(`🔄 Reconnecting in ${delay}ms (attempt ${this.retryCount}/${this.maxRetries})`);
+    console.log(
+      `🔄 Reconnecting in ${delay}ms (attempt ${this.retryCount}/${this.maxRetries})`
+    );
     this.onStatusChange?.("reconnecting");
 
     this.reconnectTimeout = setTimeout(() => {
@@ -167,12 +178,12 @@ class ReconnectingWebSocket {
   close() {
     this.shouldReconnect = false;
     this.stopPingPong();
-    
+
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
       this.reconnectTimeout = null;
     }
-    
+
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -181,7 +192,7 @@ class ReconnectingWebSocket {
 }
 
 // ============================================================================
-// STREAMING COMPONENTS
+// STREAMING COMPONENTS WITH MARKDOWN SUPPORT
 // ============================================================================
 
 function StreamingText({ text, isComplete, className = "" }) {
@@ -190,11 +201,11 @@ function StreamingText({ text, isComplete, className = "" }) {
 
   useEffect(() => {
     if (isComplete) {
-      setDisplayedWords(text.split(' '));
+      setDisplayedWords(text.split(" "));
       return;
     }
 
-    const words = text.split(' ');
+    const words = text.split(" ");
     if (currentWordIndex < words.length) {
       const timer = setTimeout(() => {
         setDisplayedWords(words.slice(0, currentWordIndex + 1));
@@ -206,12 +217,12 @@ function StreamingText({ text, isComplete, className = "" }) {
   }, [text, currentWordIndex, isComplete]);
 
   return (
-    <p className={`whitespace-pre-wrap leading-relaxed ${className}`}>
-      {displayedWords.join(' ')}
-      {!isComplete && currentWordIndex < text.split(' ').length && (
+    <div className={`whitespace-pre-wrap leading-relaxed ${className}`}>
+      <MarkdownRenderer content={displayedWords.join(" ")} />
+      {!isComplete && currentWordIndex < text.split(" ").length && (
         <span className="inline-block w-1 h-4 bg-blue-400 ml-1 animate-pulse"></span>
       )}
-    </p>
+    </div>
   );
 }
 
@@ -236,17 +247,17 @@ function StreamingAnswer({ text, isComplete }) {
   }, [text, currentIndex, isComplete]);
 
   return (
-    <p className="text-gray-300 whitespace-pre-wrap leading-relaxed">
-      {displayedText}
+    <div className="text-gray-300 whitespace-pre-wrap leading-relaxed">
+      <MarkdownRenderer content={displayedText} />
       {!isComplete && currentIndex < text.length && (
         <span className="inline-block w-1 h-4 bg-green-400 ml-1 animate-pulse"></span>
       )}
-    </p>
+    </div>
   );
 }
 
 // ============================================================================
-// QA LIST
+// QA LIST WITH MARKDOWN SUPPORT
 // ============================================================================
 
 function QAList({ qaList }) {
@@ -256,23 +267,30 @@ function QAList({ qaList }) {
         const questionNumber = index + 1;
 
         return (
-          <div key={item.id} className="bg-gray-900 rounded-lg p-4 border border-gray-800 hover:border-gray-700 transition-colors">
+          <div
+            key={item.id}
+            className="bg-gray-900 rounded-lg p-4 border border-gray-800 hover:border-gray-700 transition-colors"
+          >
             <div className="mb-3">
               <div className="flex items-center gap-2 mb-2">
                 <span className="text-xs font-semibold text-purple-400 bg-purple-900/30 px-2 py-1 rounded">
                   ❓ QUESTION #{questionNumber}
                 </span>
               </div>
-              <p className="text-gray-200 font-medium leading-relaxed">{item.question}</p>
+              <p className="text-gray-200 font-medium leading-relaxed">
+                {item.question}
+              </p>
             </div>
 
             <div className="border-t border-gray-800 pt-3 mt-3">
               <div className="flex items-center gap-2 mb-2">
-                <span className="text-xs font-semibold text-green-400 bg-green-900/30 px-2 py-1 rounded">💬 ANSWER</span>
+                <span className="text-xs font-semibold text-green-400 bg-green-900/30 px-2 py-1 rounded">
+                  💬 ANSWER
+                </span>
               </div>
-              <p className="text-gray-300 whitespace-pre-wrap leading-relaxed">
-                {item.answer}
-              </p>
+              <div className="text-gray-300 whitespace-pre-wrap leading-relaxed">
+                <MarkdownRenderer content={item.answer} />
+              </div>
             </div>
           </div>
         );
@@ -289,6 +307,55 @@ export default function InterviewAssist() {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, loading } = useAuth();
+  
+
+  // ⭐ MANUAL GENERATE BUTTON HANDLER ⭐
+ // ⭐ FIXED MANUAL GENERATE ⭐
+async function handleManualGenerate(text) {
+  console.log("🟦 [ManualGenerate] Button clicked with text:", text);
+
+  try {
+    console.log("🟦 Sending request → /api/manual-generate");
+
+    const payload = {
+      user_id: user?.id || "anonymous",
+      message: text,
+      model: settings.defaultModel || "gpt-4o"
+    };
+
+    console.log("🟦 Payload:", payload);
+
+    const res = await fetch("http://127.0.0.1:8000/api/manual-generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    console.log("🟧 Server responded. Status:", res.status);
+
+    const data = await res.json();
+    console.log("🟩 Parsed response:", data);
+
+    if (data.answer) {
+      console.log("🟩 Adding answer to UI:", data.answer);
+
+      setQaList((prev) => [
+        ...prev,
+        {
+          id: Date.now() + Math.random(),
+          question: text,
+          answer: data.answer,
+        },
+      ]);
+    } else {
+      console.warn("⚠️ No answer returned from backend");
+    }
+  } catch (err) {
+    console.error("🔴 Manual generate failed:", err);
+    console.error("🔴 Full error:", JSON.stringify(err));
+  }
+}
+
 
   // Persona & Settings State
   const [personaId] = useState(
@@ -313,16 +380,16 @@ export default function InterviewAssist() {
       return saved
         ? JSON.parse(saved)
         : {
-          responseStyle: "professional",
-          audioLanguage: "English",
-          pauseInterval: 2.0,
-          advancedQuestionDetection: true,
-          messageDirection: "bottom",
-          autoScroll: true,
-          programmingLanguage: "Python",
-          selectedResponseStyleId: "concise",
-          defaultModel: "gpt-4o-mini"
-        };
+            responseStyle: "professional",
+            audioLanguage: "English",
+            pauseInterval: 2.0,
+            advancedQuestionDetection: true,
+            messageDirection: "bottom",
+            autoScroll: true,
+            programmingLanguage: "Python",
+            selectedResponseStyleId: "concise",
+            defaultModel: "gpt-4o-mini",
+          };
     } catch {
       return {
         responseStyle: "professional",
@@ -333,7 +400,7 @@ export default function InterviewAssist() {
         autoScroll: true,
         programmingLanguage: "Python",
         selectedResponseStyleId: "concise",
-        defaultModel: "gpt-4o-mini"
+        defaultModel: "gpt-4o-mini",
       };
     }
   });
@@ -358,12 +425,15 @@ export default function InterviewAssist() {
   const [isStreamingComplete, setIsStreamingComplete] = useState(false);
 
   // Current paragraph building states
-  const [currentCandidateParagraph, setCurrentCandidateParagraph] = useState("");
-  const [currentInterviewerParagraph, setCurrentInterviewerParagraph] = useState("");
-  
+  const [currentCandidateParagraph, setCurrentCandidateParagraph] =
+    useState("");
+  const [currentInterviewerParagraph, setCurrentInterviewerParagraph] =
+    useState("");
+
   // Pure interim (real-time, not is_final)
   const [currentCandidateInterim, setCurrentCandidateInterim] = useState("");
-  const [currentInterviewerInterim, setCurrentInterviewerInterim] = useState("");
+  const [currentInterviewerInterim, setCurrentInterviewerInterim] =
+    useState("");
 
   // Refs
   const deepgramWsRef = useRef(null);
@@ -382,7 +452,7 @@ export default function InterviewAssist() {
   // Pause detection timer refs
   const candidatePauseTimerRef = useRef(null);
   const interviewerPauseTimerRef = useRef(null);
-  
+
   // Track state with refs to prevent race conditions
   const candidateParagraphRef = useRef("");
   const interviewerParagraphRef = useRef("");
@@ -403,7 +473,15 @@ export default function InterviewAssist() {
     if (settings.autoScroll) {
       transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [candidateTranscript, interviewerTranscript, currentCandidateParagraph, currentInterviewerParagraph, currentCandidateInterim, currentInterviewerInterim, settings.autoScroll]);
+  }, [
+    candidateTranscript,
+    interviewerTranscript,
+    currentCandidateParagraph,
+    currentInterviewerParagraph,
+    currentCandidateInterim,
+    currentInterviewerInterim,
+    settings.autoScroll,
+  ]);
 
   useEffect(() => {
     if (settings.autoScroll) {
@@ -418,12 +496,12 @@ export default function InterviewAssist() {
   const connectDeepgram = () => {
     return new Promise((resolve, reject) => {
       const languageMap = {
-        "English": "en",
-        "Spanish": "es",
-        "French": "fr",
-        "German": "de",
-        "Hindi": "hi",
-        "Mandarin": "zh"
+        English: "en",
+        Spanish: "es",
+        French: "fr",
+        German: "de",
+        Hindi: "hi",
+        Mandarin: "zh",
       };
       const language = languageMap[settings.audioLanguage] || "en";
 
@@ -434,15 +512,15 @@ export default function InterviewAssist() {
         try {
           const data = JSON.parse(event.data);
 
-          if (data.type === 'transcript') {
+          if (data.type === "transcript") {
             handleDeepgramTranscript(data);
-          } else if (data.type === 'error') {
+          } else if (data.type === "error") {
             setTabAudioError(data.message);
-          } else if (data.type === 'ready' || data.type === 'connected') {
-            console.log('✓ Deepgram:', data.message);
+          } else if (data.type === "ready" || data.type === "connected") {
+            console.log("✓ Deepgram:", data.message);
           }
         } catch (e) {
-          console.error('Deepgram parse error:', e);
+          console.error("Deepgram parse error:", e);
         }
       };
 
@@ -465,7 +543,8 @@ export default function InterviewAssist() {
         5
       );
 
-      reconnectingDeepgramWsRef.current.connect()
+      reconnectingDeepgramWsRef.current
+        .connect()
         .then(() => {
           deepgramWsRef.current = reconnectingDeepgramWsRef.current.ws;
         })
@@ -480,37 +559,40 @@ export default function InterviewAssist() {
 
     const pauseInterval = (settings.pauseInterval || 2.0) * 1000;
 
-    if (stream === 'candidate') {
+    if (stream === "candidate") {
       if (candidatePauseTimerRef.current) {
         clearTimeout(candidatePauseTimerRef.current);
       }
 
       if (is_final || speech_final) {
-        setCurrentCandidateInterim('');
-        
-        const newParagraph = candidateParagraphRef.current 
-          ? `${candidateParagraphRef.current} ${transcript.trim()}` 
+        setCurrentCandidateInterim("");
+
+        const newParagraph = candidateParagraphRef.current
+          ? `${candidateParagraphRef.current} ${transcript.trim()}`
           : transcript.trim();
         candidateParagraphRef.current = newParagraph;
-        
+
         setCurrentCandidateParagraph(newParagraph);
 
         candidatePauseTimerRef.current = setTimeout(() => {
           if (candidateParagraphRef.current) {
             const finalText = candidateParagraphRef.current;
-            
-            setCandidateTranscript(transcripts => [...transcripts, {
-              text: finalText,
-              timestamp: new Date().toLocaleTimeString("en-US", {
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit"
-              }),
-              id: Date.now() + Math.random()
-            }]);
-            
-            candidateParagraphRef.current = '';
-            setCurrentCandidateParagraph('');
+
+            setCandidateTranscript((transcripts) => [
+              ...transcripts,
+              {
+                text: finalText,
+                timestamp: new Date().toLocaleTimeString("en-US", {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  second: "2-digit",
+                }),
+                id: Date.now() + Math.random(),
+              },
+            ]);
+
+            candidateParagraphRef.current = "";
+            setCurrentCandidateParagraph("");
           }
         }, pauseInterval);
       } else {
@@ -518,48 +600,55 @@ export default function InterviewAssist() {
           setCurrentCandidateInterim(transcript);
         }
       }
-    } else if (stream === 'interviewer') {
+    } else if (stream === "interviewer") {
       if (interviewerPauseTimerRef.current) {
         clearTimeout(interviewerPauseTimerRef.current);
       }
 
       if (is_final || speech_final) {
-        setCurrentInterviewerInterim('');
-        
-        const newParagraph = interviewerParagraphRef.current 
-          ? `${interviewerParagraphRef.current} ${transcript.trim()}` 
+        setCurrentInterviewerInterim("");
+
+        const newParagraph = interviewerParagraphRef.current
+          ? `${interviewerParagraphRef.current} ${transcript.trim()}`
           : transcript.trim();
         interviewerParagraphRef.current = newParagraph;
-        
+
         setCurrentInterviewerParagraph(newParagraph);
 
         interviewerPauseTimerRef.current = setTimeout(() => {
           if (interviewerParagraphRef.current) {
             const finalText = interviewerParagraphRef.current;
-            
-            setInterviewerTranscript(transcripts => [...transcripts, {
-              text: finalText,
-              timestamp: new Date().toLocaleTimeString("en-US", {
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit"
-              }),
-              id: Date.now() + Math.random()
-            }]);
-            
+
+            setInterviewerTranscript((transcripts) => [
+              ...transcripts,
+              {
+                text: finalText,
+                timestamp: new Date().toLocaleTimeString("en-US", {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  second: "2-digit",
+                }),
+                id: Date.now() + Math.random(),
+                stream: "interviewer"
+              },
+            ]);
+
             // Send to Q&A using reconnecting websocket
             if (reconnectingQaWsRef.current) {
               reconnectingQaWsRef.current.send({
                 type: "transcript",
                 transcript: finalText,
                 is_final: true,
-                speech_final: true
+                speech_final: true,
               });
-              console.log("📤 Sent to Q&A:", finalText.substring(0, 50) + "...");
+              console.log(
+                "📤 Sent to Q&A:",
+                finalText.substring(0, 50) + "..."
+              );
             }
-            
-            interviewerParagraphRef.current = '';
-            setCurrentInterviewerParagraph('');
+
+            interviewerParagraphRef.current = "";
+            setCurrentInterviewerParagraph("");
           }
         }, pauseInterval);
       } else {
@@ -578,14 +667,15 @@ export default function InterviewAssist() {
           sampleRate: 16000,
           echoCancellation: true,
           noiseSuppression: true,
-          autoGainControl: true
-        }
+          autoGainControl: true,
+        },
       });
 
       candidateStreamRef.current = stream;
 
-      const audioContext = new (window.AudioContext || window.webkitAudioContext)({
-        sampleRate: 16000
+      const audioContext = new (window.AudioContext ||
+        window.webkitAudioContext)({
+        sampleRate: 16000,
       });
       candidateAudioContextRef.current = audioContext;
 
@@ -601,29 +691,29 @@ export default function InterviewAssist() {
 
         for (let i = 0; i < inputData.length; i++) {
           const s = Math.max(-1, Math.min(1, inputData[i]));
-          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
         }
 
         reconnectingDeepgramWsRef.current.send({
-          type: 'candidate',
-          audio: Array.from(pcm16)
+          type: "candidate",
+          audio: Array.from(pcm16),
         });
       };
 
       source.connect(processor);
       processor.connect(audioContext.destination);
 
-      console.log('✓ Microphone started');
+      console.log("✓ Microphone started");
     } catch (err) {
-      console.error('Microphone error:', err);
-      setTabAudioError('Microphone denied');
+      console.error("Microphone error:", err);
+      setTabAudioError("Microphone denied");
       throw err;
     }
   };
 
   const startSystemAudioCapture = async () => {
     if (interviewerStreamRef.current) {
-      console.warn('⚠️ Interviewer audio already capturing');
+      console.warn("⚠️ Interviewer audio already capturing");
       return;
     }
 
@@ -632,7 +722,7 @@ export default function InterviewAssist() {
         video: {
           width: { ideal: 1 },
           height: { ideal: 1 },
-          frameRate: { ideal: 1 }
+          frameRate: { ideal: 1 },
         },
         audio: {
           channelCount: 1,
@@ -640,8 +730,8 @@ export default function InterviewAssist() {
           echoCancellation: false,
           noiseSuppression: false,
           autoGainControl: false,
-          suppressLocalAudioPlayback: false
-        }
+          suppressLocalAudioPlayback: false,
+        },
       });
 
       const videoTrack = stream.getVideoTracks()[0];
@@ -657,8 +747,9 @@ export default function InterviewAssist() {
 
       interviewerStreamRef.current = stream;
 
-      const audioContext = new (window.AudioContext || window.webkitAudioContext)({
-        sampleRate: 16000
+      const audioContext = new (window.AudioContext ||
+        window.webkitAudioContext)({
+        sampleRate: 16000,
       });
       interviewerAudioContextRef.current = audioContext;
 
@@ -674,26 +765,26 @@ export default function InterviewAssist() {
 
         for (let i = 0; i < inputData.length; i++) {
           const s = Math.max(-1, Math.min(1, inputData[i]));
-          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
         }
 
         reconnectingDeepgramWsRef.current.send({
-          type: 'interviewer',
-          audio: Array.from(pcm16)
+          type: "interviewer",
+          audio: Array.from(pcm16),
         });
       };
 
       source.connect(processor);
       processor.connect(audioContext.destination);
 
-      console.log('✓ System audio started');
+      console.log("✓ System audio started");
       setShowTabModal(false);
     } catch (err) {
-      console.error('System audio error:', err);
+      console.error("System audio error:", err);
 
-      if (err.name === 'NotAllowedError') {
-        setTabAudioError('Screen share denied');
-      } else if (err.message.includes('No audio track')) {
+      if (err.name === "NotAllowedError") {
+        setTabAudioError("Screen share denied");
+      } else if (err.message.includes("No audio track")) {
         setTabAudioError('No audio. Check "Share tab audio"');
         setShowTabModal(true);
       } else {
@@ -712,41 +803,48 @@ export default function InterviewAssist() {
     }
 
     if (candidateParagraphRef.current) {
-      setCandidateTranscript(prev => [...prev, {
-        text: candidateParagraphRef.current,
-        timestamp: new Date().toLocaleTimeString("en-US", {
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit"
-        }),
-        id: Date.now() + Math.random()
-      }]);
-      candidateParagraphRef.current = '';
-      setCurrentCandidateParagraph('');
+      setCandidateTranscript((prev) => [
+        ...prev,
+        {
+          text: candidateParagraphRef.current,
+          timestamp: new Date().toLocaleTimeString("en-US", {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          }),
+          id: Date.now() + Math.random(),
+          stream: "candidate"
+        },
+      ]);
+      candidateParagraphRef.current = "";
+      setCurrentCandidateParagraph("");
     }
 
     if (interviewerParagraphRef.current) {
-      setInterviewerTranscript(prev => [...prev, {
-        text: interviewerParagraphRef.current,
-        timestamp: new Date().toLocaleTimeString("en-US", {
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit"
-        }),
-        id: Date.now() + Math.random()
-      }]);
-      
+      setInterviewerTranscript((prev) => [
+        ...prev,
+        {
+          text: interviewerParagraphRef.current,
+          timestamp: new Date().toLocaleTimeString("en-US", {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          }),
+          id: Date.now() + Math.random(),
+        },
+      ]);
+
       if (reconnectingQaWsRef.current) {
         reconnectingQaWsRef.current.send({
           type: "transcript",
           transcript: interviewerParagraphRef.current,
           is_final: true,
-          speech_final: true
+          speech_final: true,
         });
       }
-      
-      interviewerParagraphRef.current = '';
-      setCurrentInterviewerParagraph('');
+
+      interviewerParagraphRef.current = "";
+      setCurrentInterviewerParagraph("");
     }
 
     if (candidateProcessorRef.current) {
@@ -758,7 +856,7 @@ export default function InterviewAssist() {
       candidateAudioContextRef.current = null;
     }
     if (candidateStreamRef.current) {
-      candidateStreamRef.current.getTracks().forEach(track => track.stop());
+      candidateStreamRef.current.getTracks().forEach((track) => track.stop());
       candidateStreamRef.current = null;
     }
 
@@ -771,7 +869,7 @@ export default function InterviewAssist() {
       interviewerAudioContextRef.current = null;
     }
     if (interviewerStreamRef.current) {
-      interviewerStreamRef.current.getTracks().forEach(track => track.stop());
+      interviewerStreamRef.current.getTracks().forEach((track) => track.stop());
       interviewerStreamRef.current = null;
     }
 
@@ -781,7 +879,7 @@ export default function InterviewAssist() {
     }
     deepgramWsRef.current = null;
 
-    console.log('✓ Deepgram stopped');
+    console.log("✓ Deepgram stopped");
   };
 
   // ============================================================================
@@ -792,7 +890,7 @@ export default function InterviewAssist() {
     return new Promise((resolve, reject) => {
       const qaUrl = getWebSocketUrl("/ws/live-interview");
       console.log(`🔗 Connecting to Q&A: ${qaUrl}`);
-      
+
       const handleMessage = (event) => {
         try {
           const data = JSON.parse(event.data);
@@ -817,13 +915,20 @@ export default function InterviewAssist() {
             case "answer_ready":
               console.log("💬 Answer:", data);
 
-              if (!data.answer || typeof data.answer !== 'string' || data.answer.trim() === '') {
+              if (
+                !data.answer ||
+                typeof data.answer !== "string" ||
+                data.answer.trim() === ""
+              ) {
                 console.error("❌ Invalid answer:", data.answer);
                 setIsGenerating(false);
                 break;
               }
 
-              console.log("✅ Valid answer:", data.answer.substring(0, 100) + "...");
+              console.log(
+                "✅ Valid answer:",
+                data.answer.substring(0, 100) + "..."
+              );
 
               setCurrentAnswer(data.answer);
               setIsGenerating(false);
@@ -835,7 +940,7 @@ export default function InterviewAssist() {
 
                 addQA({
                   question: data.question || currentQuestion,
-                  answer: data.answer
+                  answer: data.answer,
                 });
 
                 setTimeout(() => {
@@ -860,7 +965,7 @@ export default function InterviewAssist() {
       const handleStatusChange = (status) => {
         if (status === "connected") {
           setQaStatus("Initializing...");
-          
+
           // Send init message
           const initMessage = {
             type: "init",
@@ -877,15 +982,17 @@ export default function InterviewAssist() {
             settings: {
               audioLanguage: settings.audioLanguage || "English",
               pauseInterval: settings.pauseInterval || 2.0,
-              advancedQuestionDetection: settings.advancedQuestionDetection !== false,
-              selectedResponseStyleId: settings.selectedResponseStyleId || "concise",
+              advancedQuestionDetection:
+                settings.advancedQuestionDetection !== false,
+              selectedResponseStyleId:
+                settings.selectedResponseStyleId || "concise",
               responseStyle: settings.responseStyle || "professional",
               defaultModel: settings.defaultModel || "gpt-4o-mini",
               programmingLanguage: settings.programmingLanguage || "Python",
               interviewInstructions: settings.interviewInstructions || "",
               messageDirection: settings.messageDirection || "bottom",
-              autoScroll: settings.autoScroll !== false
-            }
+              autoScroll: settings.autoScroll !== false,
+            },
           };
 
           reconnectingQaWsRef.current?.send(initMessage);
@@ -904,7 +1011,8 @@ export default function InterviewAssist() {
         5
       );
 
-      reconnectingQaWsRef.current.connect()
+      reconnectingQaWsRef.current
+        .connect()
         .then(() => {
           qaWsRef.current = reconnectingQaWsRef.current.ws;
         })
@@ -918,13 +1026,15 @@ export default function InterviewAssist() {
       reconnectingQaWsRef.current = null;
     }
     qaWsRef.current = null;
-    console.log('✓ Q&A stopped');
+    console.log("✓ Q&A stopped");
   };
 
   const addQA = (qa) => {
     setQaList((prev) => {
       const isDuplicate = prev.some(
-        (item) => item.question.trim().toLowerCase() === qa.question.trim().toLowerCase()
+        (item) =>
+          item.question.trim().toLowerCase() ===
+          qa.question.trim().toLowerCase()
       );
       if (isDuplicate) return prev;
 
@@ -947,7 +1057,7 @@ export default function InterviewAssist() {
       setDeepgramStatus("🎤 Recording (Select Tab)");
       setQaStatus("🤖 Q&A Active");
     } catch (err) {
-      console.error('Failed to start:', err);
+      console.error("Failed to start:", err);
       stopDeepgramCapture();
       stopQA();
       setIsRecording(false);
@@ -960,13 +1070,13 @@ export default function InterviewAssist() {
     setIsRecording(false);
     setDeepgramStatus("Stopped");
     setQaStatus("Stopped");
-    
-    candidateParagraphRef.current = '';
-    interviewerParagraphRef.current = '';
-    setCurrentCandidateParagraph('');
-    setCurrentInterviewerParagraph('');
-    setCurrentCandidateInterim('');
-    setCurrentInterviewerInterim('');
+
+    candidateParagraphRef.current = "";
+    interviewerParagraphRef.current = "";
+    setCurrentCandidateParagraph("");
+    setCurrentInterviewerParagraph("");
+    setCurrentCandidateInterim("");
+    setCurrentInterviewerInterim("");
   };
 
   const handleTabAudioSelection = async () => {
@@ -1017,7 +1127,7 @@ export default function InterviewAssist() {
       y += lines.length * 7 + 5;
     });
 
-    doc.save(`Interview_QnA_${new Date().toISOString().split('T')[0]}.pdf`);
+    doc.save(`Interview_QnA_${new Date().toISOString().split("T")[0]}.pdf`);
   };
 
   useEffect(() => {
@@ -1037,9 +1147,16 @@ export default function InterviewAssist() {
 
   if (!user) return null;
 
-  const currentTranscript = activeView === "interviewer" ? interviewerTranscript : candidateTranscript;
-  const currentParagraph = activeView === "interviewer" ? currentInterviewerParagraph : currentCandidateParagraph;
-  const currentInterim = activeView === "interviewer" ? currentInterviewerInterim : currentCandidateInterim;
+  const currentTranscript =
+    activeView === "interviewer" ? interviewerTranscript : candidateTranscript;
+  const currentParagraph =
+    activeView === "interviewer"
+      ? currentInterviewerParagraph
+      : currentCandidateParagraph;
+  const currentInterim =
+    activeView === "interviewer"
+      ? currentInterviewerInterim
+      : currentCandidateInterim;
 
   return (
     <div className="h-screen bg-gray-950 text-gray-100 flex flex-col">
@@ -1055,7 +1172,9 @@ export default function InterviewAssist() {
             </button>
             <div>
               <h1 className="text-xl font-semibold text-white">
-                {personaData ? `${personaData.position} @ ${personaData.company_name}` : "Interview Assistant"}
+                {personaData
+                  ? `${personaData.position} @ ${personaData.company_name}`
+                  : "Interview Assistant"}
               </h1>
               <p className="text-xs text-gray-500 mt-0.5">
                 Real-time transcription & AI Q&A
@@ -1118,9 +1237,19 @@ export default function InterviewAssist() {
 
         {personaData && (
           <div className="flex items-center gap-6 text-sm text-gray-400">
-            <span><strong className="text-purple-400">Position:</strong> {personaData.position}</span>
-            <span><strong className="text-purple-400">Company:</strong> {personaData.company_name}</span>
-            {domain && <span><strong className="text-pink-400">Domain:</strong> {domain}</span>}
+            <span>
+              <strong className="text-purple-400">Position:</strong>{" "}
+              {personaData.position}
+            </span>
+            <span>
+              <strong className="text-purple-400">Company:</strong>{" "}
+              {personaData.company_name}
+            </span>
+            {domain && (
+              <span>
+                <strong className="text-pink-400">Domain:</strong> {domain}
+              </span>
+            )}
           </div>
         )}
       </header>
@@ -1130,7 +1259,9 @@ export default function InterviewAssist() {
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 backdrop-blur-sm">
           <div className="bg-gray-900 rounded-xl p-6 w-full max-w-lg border border-gray-800 shadow-2xl">
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-semibold text-white">📡 Enable Interviewer Audio</h3>
+              <h3 className="text-xl font-semibold text-white">
+                📡 Enable Interviewer Audio
+              </h3>
               <button
                 onClick={() => {
                   setShowTabModal(false);
@@ -1149,11 +1280,17 @@ export default function InterviewAssist() {
                 <div className="flex items-start gap-3">
                   <AlertCircle className="w-5 h-5 text-yellow-400 flex-shrink-0 mt-0.5" />
                   <div className="text-sm text-yellow-200">
-                    <p className="font-semibold mb-2">Enable "Share tab audio"</p>
+                    <p className="font-semibold mb-2">
+                      Enable "Share tab audio"
+                    </p>
                     <ol className="list-decimal list-inside space-y-1 text-xs">
                       <li>Click "Select Tab Audio"</li>
                       <li>Choose interview tab (Zoom/Meet)</li>
-                      <li><strong className="text-yellow-300">Check "Share tab audio"</strong></li>
+                      <li>
+                        <strong className="text-yellow-300">
+                          Check "Share tab audio"
+                        </strong>
+                      </li>
                       <li>Click "Share"</li>
                     </ol>
                   </div>
@@ -1226,13 +1363,19 @@ export default function InterviewAssist() {
                 className="p-2 hover:bg-gray-800 rounded-lg transition-colors"
                 disabled={!isRecording}
               >
-                {isPaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+                {isPaused ? (
+                  <Play className="w-4 h-4" />
+                ) : (
+                  <Pause className="w-4 h-4" />
+                )}
               </button>
             </div>
           </div>
 
           <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-            {currentTranscript.length === 0 && !currentParagraph && !currentInterim ? (
+            {currentTranscript.length === 0 &&
+            !currentParagraph &&
+            !currentInterim ? (
               <div className="h-full flex items-center justify-center">
                 <div className="text-center">
                   <div className="mb-4">
@@ -1243,9 +1386,13 @@ export default function InterviewAssist() {
                     )}
                   </div>
                   <p className="text-gray-500 mb-2 font-medium">
-                    {activeView === "interviewer" ? "Interviewer speech" : "Your speech"}
+                    {activeView === "interviewer"
+                      ? "Interviewer speech"
+                      : "Your speech"}
                   </p>
-                  <p className="text-gray-600 text-sm">Click "Start Recording" to begin</p>
+                  <p className="text-gray-600 text-sm">
+                    Click "Start Recording" to begin
+                  </p>
                 </div>
               </div>
             ) : (
@@ -1258,23 +1405,39 @@ export default function InterviewAssist() {
                     <div className="flex justify-between items-start mb-2">
                       <span
                         className={`text-xs font-semibold px-2 py-1 rounded ${
-                          activeView === "interviewer"
+                          entry.stream === "interviewer"
                             ? "text-green-400 bg-green-900/30"
                             : "text-blue-400 bg-blue-900/30"
                         }`}
                       >
-                        {activeView === "interviewer" ? "Interviewer" : "You"}
+                        {entry.stream === "interviewer" ? "Interviewer" : "You"}
                       </span>
-                      <span className="text-xs text-gray-500">{entry.timestamp}</span>
+                      <span className="text-xs text-gray-500">
+                        {entry.timestamp}
+                      </span>
                     </div>
-                    <p className="text-gray-200 leading-relaxed">{entry.text}</p>
+
+                    <p className="text-gray-200 leading-relaxed">
+                      {entry.text}
+                    </p>
+
+                    {entry.stream === "interviewer" && (
+                      <button
+                        onClick={() => handleManualGenerate(entry.text)}
+                        className="mt-3 px-3 py-1 border border-gray-700 bg-gray-800 text-gray-300 rounded text-sm hover:bg-gray-700"
+                      >
+                        Generate Answer
+                      </button>
+                    )}
                   </div>
                 ))}
 
                 {currentParagraph && (
                   <div
                     className={`bg-gray-900/50 rounded-lg p-4 border-2 ${
-                      activeView === "interviewer" ? "border-green-500/30" : "border-blue-500/30"
+                      activeView === "interviewer"
+                        ? "border-green-500/30"
+                        : "border-blue-500/30"
                     } animate-pulse`}
                   >
                     <div className="flex justify-between items-start mb-2">
@@ -1289,14 +1452,18 @@ export default function InterviewAssist() {
                         <span className="text-xs">speaking...</span>
                       </span>
                     </div>
-                    <p className="text-gray-200 leading-relaxed">{currentParagraph}</p>
+                    <p className="text-gray-200 leading-relaxed">
+                      {currentParagraph}
+                    </p>
                   </div>
                 )}
-                
+
                 {!currentParagraph && currentInterim && (
                   <div
                     className={`bg-gray-900/50 rounded-lg p-4 border-2 ${
-                      activeView === "interviewer" ? "border-green-500/20" : "border-blue-500/20"
+                      activeView === "interviewer"
+                        ? "border-green-500/20"
+                        : "border-blue-500/20"
                     }`}
                   >
                     <div className="flex justify-between items-start mb-2">
@@ -1311,7 +1478,9 @@ export default function InterviewAssist() {
                         <span className="text-xs opacity-60">interim...</span>
                       </span>
                     </div>
-                    <p className="text-gray-300 leading-relaxed opacity-70 italic">{currentInterim}</p>
+                    <p className="text-gray-300 leading-relaxed opacity-70 italic">
+                      {currentInterim}
+                    </p>
                   </div>
                 )}
               </>
@@ -1324,12 +1493,14 @@ export default function InterviewAssist() {
         <div className="w-1/2 flex flex-col">
           <div className="bg-gray-900 px-6 py-3 border-b border-gray-800 flex items-center justify-between">
             <div>
-              <h2 className="text-lg font-semibold text-white">Interview Copilot</h2>
+              <h2 className="text-lg font-semibold text-white">
+                Interview Copilot
+              </h2>
               <p className="text-xs text-gray-500 mt-0.5">AI Q&A (Automatic)</p>
             </div>
             <div className="text-sm text-gray-400 flex items-center gap-2">
               <span className="bg-gray-800 px-3 py-1 rounded-full">
-                {qaList.length} answer{qaList.length !== 1 ? 's' : ''}
+                {qaList.length} answer{qaList.length !== 1 ? "s" : ""}
               </span>
               {isGenerating && (
                 <span className="flex items-center gap-1 text-purple-400">
@@ -1349,8 +1520,12 @@ export default function InterviewAssist() {
                       <span className="text-3xl">🤖</span>
                     </div>
                   </div>
-                  <p className="text-gray-500 mb-2 font-medium">AI answers appear here</p>
-                  <p className="text-gray-600 text-sm">Click "Start Recording" to begin</p>
+                  <p className="text-gray-500 mb-2 font-medium">
+                    AI answers appear here
+                  </p>
+                  <p className="text-gray-600 text-sm">
+                    Click "Start Recording" to begin
+                  </p>
                 </div>
               </div>
             ) : (
@@ -1365,7 +1540,9 @@ export default function InterviewAssist() {
                           ❓ CURRENT QUESTION
                         </span>
                       </div>
-                      <p className="text-white font-medium text-lg leading-relaxed">{currentQuestion}</p>
+                      <p className="text-white font-medium text-lg leading-relaxed">
+                        {currentQuestion}
+                      </p>
                     </div>
 
                     <div className="border-t border-purple-500/30 pt-4">
@@ -1388,7 +1565,10 @@ export default function InterviewAssist() {
                       </div>
 
                       {currentAnswer ? (
-                        <StreamingAnswer text={currentAnswer} isComplete={isStreamingComplete} />
+                        <StreamingAnswer
+                          text={currentAnswer}
+                          isComplete={isStreamingComplete}
+                        />
                       ) : (
                         <div className="flex items-center gap-2">
                           <div className="w-2 h-2 bg-purple-400 rounded-full animate-pulse"></div>
@@ -1400,7 +1580,9 @@ export default function InterviewAssist() {
                             className="w-2 h-2 bg-purple-400 rounded-full animate-pulse"
                             style={{ animationDelay: "0.4s" }}
                           ></div>
-                          <span className="text-sm text-gray-300 ml-2">Preparing answer...</span>
+                          <span className="text-sm text-gray-300 ml-2">
+                            Preparing answer...
+                          </span>
                         </div>
                       )}
                     </div>
@@ -1420,12 +1602,15 @@ export default function InterviewAssist() {
             className={`w-2 h-2 rounded-full ${
               deepgramStatus.includes("Recording")
                 ? "bg-green-500 animate-pulse"
-                : deepgramStatus.includes("Error") || deepgramStatus.includes("Reconnecting")
-                ? "bg-yellow-500"
-                : "bg-gray-600"
+                : deepgramStatus.includes("Error") ||
+                    deepgramStatus.includes("Reconnecting")
+                  ? "bg-yellow-500"
+                  : "bg-gray-600"
             }`}
           />
-          <span className="text-sm text-gray-400">Deepgram: {deepgramStatus}</span>
+          <span className="text-sm text-gray-400">
+            Deepgram: {deepgramStatus}
+          </span>
         </div>
 
         <div className="h-4 w-px bg-gray-700" />
@@ -1435,9 +1620,10 @@ export default function InterviewAssist() {
             className={`w-2 h-2 rounded-full ${
               qaStatus.includes("Active")
                 ? "bg-blue-500 animate-pulse"
-                : qaStatus.includes("Error") || qaStatus.includes("Reconnecting")
-                ? "bg-yellow-500"
-                : "bg-gray-600"
+                : qaStatus.includes("Error") ||
+                    qaStatus.includes("Reconnecting")
+                  ? "bg-yellow-500"
+                  : "bg-gray-600"
             }`}
           />
           <span className="text-sm text-gray-400">Q&A: {qaStatus}</span>
@@ -1470,44 +1656,64 @@ export default function InterviewAssist() {
           <div className="bg-gray-900 rounded-xl p-6 w-full max-w-md border border-gray-800 shadow-2xl">
             <div className="flex justify-between items-center mb-6">
               <h3 className="text-xl font-semibold text-white">Settings</h3>
-              <button onClick={() => setShowSettings(false)} className="text-gray-400 hover:text-gray-200">
+              <button
+                onClick={() => setShowSettings(false)}
+                className="text-gray-400 hover:text-gray-200"
+              >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <div className="space-y-4">
               <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-                <h4 className="text-sm font-medium mb-3 text-purple-400">Configuration</h4>
+                <h4 className="text-sm font-medium mb-3 text-purple-400">
+                  Configuration
+                </h4>
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between py-1">
                     <span className="text-gray-400">Style:</span>
-                    <span className="text-white font-medium">{settings.selectedResponseStyleId || settings.responseStyle}</span>
+                    <span className="text-white font-medium">
+                      {settings.selectedResponseStyleId ||
+                        settings.responseStyle}
+                    </span>
                   </div>
                   <div className="flex justify-between py-1">
                     <span className="text-gray-400">Language:</span>
-                    <span className="text-white font-medium">{settings.audioLanguage}</span>
+                    <span className="text-white font-medium">
+                      {settings.audioLanguage}
+                    </span>
                   </div>
                   <div className="flex justify-between py-1">
                     <span className="text-gray-400">Pause Time:</span>
-                    <span className="text-white font-medium">{settings.pauseInterval}s</span>
+                    <span className="text-white font-medium">
+                      {settings.pauseInterval}s
+                    </span>
                   </div>
                   <div className="flex justify-between py-1">
                     <span className="text-gray-400">Coding:</span>
-                    <span className="text-white font-medium">{settings.programmingLanguage}</span>
+                    <span className="text-white font-medium">
+                      {settings.programmingLanguage}
+                    </span>
                   </div>
                   <div className="flex justify-between py-1">
                     <span className="text-gray-400">Model:</span>
-                    <span className="text-white font-medium">{settings.defaultModel}</span>
+                    <span className="text-white font-medium">
+                      {settings.defaultModel}
+                    </span>
                   </div>
                   <div className="flex justify-between py-1">
                     <span className="text-gray-400">Backend:</span>
-                    <span className="text-green-400 font-medium text-xs">{BACKEND_URL}</span>
+                    <span className="text-green-400 font-medium text-xs">
+                      {BACKEND_URL}
+                    </span>
                   </div>
                 </div>
               </div>
 
               <div className="bg-blue-900/20 border border-blue-800/50 rounded-lg p-4">
-                <h4 className="text-sm font-medium mb-2 text-blue-300">💡 Render Optimized</h4>
+                <h4 className="text-sm font-medium mb-2 text-blue-300">
+                  💡 Render Optimized
+                </h4>
                 <ul className="text-gray-400 text-sm space-y-1 list-disc list-inside">
                   <li>30s client keepalive (Render 60s timeout)</li>
                   <li>30s server keepalive (dual protection)</li>
