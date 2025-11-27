@@ -1,361 +1,69 @@
+// ============================================================================
+// InterviewAssist.jsx - Main Container Component
+// ============================================================================
 import React, { useState, useEffect, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "./Auth/AuthContext";
-import {
-  Mic,
-  Download,
-  Settings,
-  ArrowLeft,
-  Pause,
-  Play,
-  Volume2,
-  X,
-  AlertCircle,
-  MicOff,
-} from "lucide-react";
-import { jsPDF } from "jspdf";
-import MarkdownRenderer from "./MarkdownRenderer";
 
+// Correct imports (NO components/ prefix)
+import InterviewHeader from "./InterviewHeader";
+import TranscriptPanel from "./TranscriptPanel";
+import QACopilot from "./QACopilot";
+import SettingsModal from "./SettingsModal";
+import TabAudioModal from "./TabAudioModal";
+import StatusBar from "./StatusBar";
 
-// ============================================================================
-// WEBSOCKET URL CONFIGURATION - PRODUCTION READY
-// ============================================================================
-
-// const BACKEND_URL = "https://verve-ai-ukec.onrender.com";
-// const WS_URL = "wss://verve-ai-ukec.onrender.com";
-
-const BACKEND_URL = "http://0.0.0.0:8000";
-const WS_URL = "wss://0.0.0.0:8000";
-
-const getWebSocketUrl = (path) => {
-  const isDevelopment =
-    window.location.hostname === "localhost" ||
-    window.location.hostname === "127.0.0.1";
-
-  if (isDevelopment) {
-    return `ws://127.0.0.1:8000${path}`;
-  } else {
-    return `${WS_URL}${path}`;
-  }
-};
-
-// ============================================================================
-// WEBSOCKET RECONNECTION WITH RENDER FIXES
-// ============================================================================
-
-class ReconnectingWebSocket {
-  constructor(url, onMessage, onStatusChange, maxRetries = 5) {
-    this.url = url;
-    this.onMessage = onMessage;
-    this.onStatusChange = onStatusChange;
-    this.maxRetries = maxRetries;
-    this.retryCount = 0;
-    this.ws = null;
-    this.shouldReconnect = true;
-    this.reconnectTimeout = null;
-    this.pingInterval = null;
-  }
-
-  connect() {
-    return new Promise((resolve, reject) => {
-      try {
-        console.log(`🔗 Connecting to: ${this.url}`);
-        this.ws = new WebSocket(this.url);
-
-        this.ws.onopen = () => {
-          console.log(`✅ Connected: ${this.url}`);
-          this.retryCount = 0;
-          this.onStatusChange?.("connected");
-
-          // ✅ CRITICAL: Send immediate handshake to prevent Render timeout
-          // Use setTimeout to ensure WebSocket is fully ready
-          setTimeout(() => {
-            this.send({
-              type: "client_ready",
-              timestamp: Date.now(),
-            });
-            console.log("📤 Sent immediate handshake to:", this.url);
-          }, 100);
-
-          this.startPingPong();
-          resolve(this.ws);
-        };
-
-        this.ws.onmessage = (event) => {
-          const data = JSON.parse(event.data);
-
-          // Handle server keepalive ping
-          if (data.type === "keepalive") {
-            console.log("🏓 Received server keepalive");
-            return;
-          }
-
-          // Handle server acknowledgment
-          if (data.type === "server_ack") {
-            console.log("✅ Server acknowledged handshake");
-            return;
-          }
-
-          // Handle connection established
-          if (data.type === "connection_established") {
-            console.log("✅ Connection established:", data.message);
-            return;
-          }
-
-          this.onMessage?.(event);
-        };
-
-        this.ws.onerror = (error) => {
-          console.error(`❌ WebSocket error: ${this.url}`, error);
-          reject(error);
-        };
-
-        this.ws.onclose = (event) => {
-          console.log(
-            `🔌 Connection closed: ${this.url}`,
-            event.code,
-            event.reason
-          );
-          this.stopPingPong();
-          this.onStatusChange?.("disconnected");
-
-          if (this.shouldReconnect && this.retryCount < this.maxRetries) {
-            this.scheduleReconnect();
-          }
-        };
-      } catch (error) {
-        reject(error);
-      }
-    });
-  }
-
-  startPingPong() {
-    // ✅ Send ping every 30 seconds (Render has 60s timeout)
-    this.pingInterval = setInterval(() => {
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.send({ type: "ping" });
-        console.log("🏓 Sent client ping");
-      }
-    }, 30000);
-  }
-
-  stopPingPong() {
-    if (this.pingInterval) {
-      clearInterval(this.pingInterval);
-      this.pingInterval = null;
-    }
-  }
-
-  scheduleReconnect() {
-    if (this.reconnectTimeout) {
-      clearTimeout(this.reconnectTimeout);
-    }
-
-    const delay = Math.min(1000 * Math.pow(2, this.retryCount), 16000);
-    this.retryCount++;
-
-    console.log(
-      `🔄 Reconnecting in ${delay}ms (attempt ${this.retryCount}/${this.maxRetries})`
-    );
-    this.onStatusChange?.("reconnecting");
-
-    this.reconnectTimeout = setTimeout(() => {
-      console.log(`🔄 Attempting reconnection...`);
-      this.connect().catch(() => {
-        // Reconnection will be scheduled again by onclose handler
-      });
-    }, delay);
-  }
-
-  send(data) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(data));
-      return true;
-    }
-    return false;
-  }
-
-  close() {
-    this.shouldReconnect = false;
-    this.stopPingPong();
-
-    if (this.reconnectTimeout) {
-      clearTimeout(this.reconnectTimeout);
-      this.reconnectTimeout = null;
-    }
-
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
-    }
-  }
-}
-
-// ============================================================================
-// STREAMING COMPONENTS WITH MARKDOWN SUPPORT
-// ============================================================================
-
-function StreamingText({ text, isComplete, className = "" }) {
-  const [displayedWords, setDisplayedWords] = useState([]);
-  const [currentWordIndex, setCurrentWordIndex] = useState(0);
-
-  useEffect(() => {
-    if (isComplete) {
-      setDisplayedWords(text.split(" "));
-      return;
-    }
-
-    const words = text.split(" ");
-    if (currentWordIndex < words.length) {
-      const timer = setTimeout(() => {
-        setDisplayedWords(words.slice(0, currentWordIndex + 1));
-        setCurrentWordIndex(currentWordIndex + 1);
-      }, 80);
-
-      return () => clearTimeout(timer);
-    }
-  }, [text, currentWordIndex, isComplete]);
-
-  return (
-    <div className={`whitespace-pre-wrap leading-relaxed ${className}`}>
-      <MarkdownRenderer content={displayedWords.join(" ")} />
-      {!isComplete && currentWordIndex < text.split(" ").length && (
-        <span className="inline-block w-1 h-4 bg-blue-400 ml-1 animate-pulse"></span>
-      )}
-    </div>
-  );
-}
-
-function StreamingAnswer({ text, isComplete }) {
-  const [displayedText, setDisplayedText] = useState("");
-  const [currentIndex, setCurrentIndex] = useState(0);
-
-  useEffect(() => {
-    if (isComplete) {
-      setDisplayedText(text);
-      return;
-    }
-
-    if (currentIndex < text.length) {
-      const timer = setTimeout(() => {
-        setDisplayedText(text.slice(0, currentIndex + 1));
-        setCurrentIndex(currentIndex + 1);
-      }, 20);
-
-      return () => clearTimeout(timer);
-    }
-  }, [text, currentIndex, isComplete]);
-
-  return (
-    <div className="text-gray-300 whitespace-pre-wrap leading-relaxed">
-      <MarkdownRenderer content={displayedText} />
-      {!isComplete && currentIndex < text.length && (
-        <span className="inline-block w-1 h-4 bg-green-400 ml-1 animate-pulse"></span>
-      )}
-    </div>
-  );
-}
-
-// ============================================================================
-// QA LIST WITH MARKDOWN SUPPORT
-// ============================================================================
-
-function QAList({ qaList }) {
-  return (
-    <div className="space-y-4">
-      {qaList.map((item, index) => {
-        const questionNumber = index + 1;
-
-        return (
-          <div
-            key={item.id}
-            className="bg-gray-900 rounded-lg p-4 border border-gray-800 hover:border-gray-700 transition-colors"
-          >
-            <div className="mb-3">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-xs font-semibold text-purple-400 bg-purple-900/30 px-2 py-1 rounded">
-                  ❓ QUESTION #{questionNumber}
-                </span>
-              </div>
-              <p className="text-gray-200 font-medium leading-relaxed">
-                {item.question}
-              </p>
-            </div>
-
-            <div className="border-t border-gray-800 pt-3 mt-3">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-xs font-semibold text-green-400 bg-green-900/30 px-2 py-1 rounded">
-                  💬 ANSWER
-                </span>
-              </div>
-              <div className="text-gray-300 whitespace-pre-wrap leading-relaxed">
-                <MarkdownRenderer content={item.answer} />
-              </div>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
+// Utils
+import { ReconnectingWebSocket } from "./utils/websocket";
+import { getWebSocketUrl, BACKEND_URL } from "./utils/config";
 
 // ============================================================================
 // MAIN COMPONENT
 // ============================================================================
-
 export default function InterviewAssist() {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, loading } = useAuth();
-  
 
   // ⭐ MANUAL GENERATE BUTTON HANDLER ⭐
- // ⭐ FIXED MANUAL GENERATE ⭐
-async function handleManualGenerate(text) {
-  console.log("🟦 [ManualGenerate] Button clicked with text:", text);
+  async function handleManualGenerate(text) {
+    console.log("🟦 [ManualGenerate] Button clicked with text:", text);
+    try {
+      console.log("🟦 Sending request → /api/manual-generate");
+      const payload = {
+        user_id: user?.id || "anonymous",
+        message: text,
+        model: settings.defaultModel || "gpt-4o",
+      };
+      console.log("🟦 Payload:", payload);
 
-  try {
-    console.log("🟦 Sending request → /api/manual-generate");
+      const res = await fetch("http://127.0.0.1:8000/api/manual-generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
 
-    const payload = {
-      user_id: user?.id || "anonymous",
-      message: text,
-      model: settings.defaultModel || "gpt-4o"
-    };
+      console.log("🟧 Server responded. Status:", res.status);
+      const data = await res.json();
+      console.log("🟩 Parsed response:", data);
 
-    console.log("🟦 Payload:", payload);
-
-    const res = await fetch("http://127.0.0.1:8000/api/manual-generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    console.log("🟧 Server responded. Status:", res.status);
-
-    const data = await res.json();
-    console.log("🟩 Parsed response:", data);
-
-    if (data.answer) {
-      console.log("🟩 Adding answer to UI:", data.answer);
-
-      setQaList((prev) => [
-        ...prev,
-        {
-          id: Date.now() + Math.random(),
-          question: text,
-          answer: data.answer,
-        },
-      ]);
-    } else {
-      console.warn("⚠️ No answer returned from backend");
+      if (data.answer) {
+        console.log("🟩 Adding answer to UI:", data.answer);
+        setQaList((prev) => [
+          ...prev,
+          {
+            id: Date.now() + Math.random(),
+            question: text,
+            answer: data.answer,
+          },
+        ]);
+      } else {
+        console.warn("⚠️ No answer returned from backend");
+      }
+    } catch (err) {
+      console.error("🔴 Manual generate failed:", err);
     }
-  } catch (err) {
-    console.error("🔴 Manual generate failed:", err);
-    console.error("🔴 Full error:", JSON.stringify(err));
   }
-}
-
 
   // Persona & Settings State
   const [personaId] = useState(
@@ -425,15 +133,12 @@ async function handleManualGenerate(text) {
   const [isStreamingComplete, setIsStreamingComplete] = useState(false);
 
   // Current paragraph building states
-  const [currentCandidateParagraph, setCurrentCandidateParagraph] =
-    useState("");
-  const [currentInterviewerParagraph, setCurrentInterviewerParagraph] =
-    useState("");
+  const [currentCandidateParagraph, setCurrentCandidateParagraph] = useState("");
+  const [currentInterviewerParagraph, setCurrentInterviewerParagraph] = useState("");
 
   // Pure interim (real-time, not is_final)
   const [currentCandidateInterim, setCurrentCandidateInterim] = useState("");
-  const [currentInterviewerInterim, setCurrentInterviewerInterim] =
-    useState("");
+  const [currentInterviewerInterim, setCurrentInterviewerInterim] = useState("");
 
   // Refs
   const deepgramWsRef = useRef(null);
@@ -446,8 +151,6 @@ async function handleManualGenerate(text) {
   const interviewerAudioContextRef = useRef(null);
   const candidateProcessorRef = useRef(null);
   const interviewerProcessorRef = useRef(null);
-  const transcriptEndRef = useRef(null);
-  const copilotEndRef = useRef(null);
 
   // Pause detection timer refs
   const candidatePauseTimerRef = useRef(null);
@@ -467,32 +170,8 @@ async function handleManualGenerate(text) {
   }, [user, loading, navigate]);
 
   // ============================================================================
-  // AUTO-SCROLL
-  // ============================================================================
-  useEffect(() => {
-    if (settings.autoScroll) {
-      transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [
-    candidateTranscript,
-    interviewerTranscript,
-    currentCandidateParagraph,
-    currentInterviewerParagraph,
-    currentCandidateInterim,
-    currentInterviewerInterim,
-    settings.autoScroll,
-  ]);
-
-  useEffect(() => {
-    if (settings.autoScroll) {
-      copilotEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [qaList, currentAnswer, settings.autoScroll]);
-
-  // ============================================================================
   // LEFT PANEL: DEEPGRAM DUAL-STREAM TRANSCRIPTION
   // ============================================================================
-
   const connectDeepgram = () => {
     return new Promise((resolve, reject) => {
       const languageMap = {
@@ -504,14 +183,13 @@ async function handleManualGenerate(text) {
         Mandarin: "zh",
       };
       const language = languageMap[settings.audioLanguage] || "en";
-
       const wsUrl = getWebSocketUrl(`/ws/dual-transcribe?language=${language}`);
+
       console.log(`🔗 Connecting to Deepgram: ${wsUrl}`);
 
       const handleMessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-
           if (data.type === "transcript") {
             handleDeepgramTranscript(data);
           } else if (data.type === "error") {
@@ -566,18 +244,15 @@ async function handleManualGenerate(text) {
 
       if (is_final || speech_final) {
         setCurrentCandidateInterim("");
-
         const newParagraph = candidateParagraphRef.current
           ? `${candidateParagraphRef.current} ${transcript.trim()}`
           : transcript.trim();
         candidateParagraphRef.current = newParagraph;
-
         setCurrentCandidateParagraph(newParagraph);
 
         candidatePauseTimerRef.current = setTimeout(() => {
           if (candidateParagraphRef.current) {
             const finalText = candidateParagraphRef.current;
-
             setCandidateTranscript((transcripts) => [
               ...transcripts,
               {
@@ -588,9 +263,9 @@ async function handleManualGenerate(text) {
                   second: "2-digit",
                 }),
                 id: Date.now() + Math.random(),
+                stream: "candidate",
               },
             ]);
-
             candidateParagraphRef.current = "";
             setCurrentCandidateParagraph("");
           }
@@ -607,18 +282,15 @@ async function handleManualGenerate(text) {
 
       if (is_final || speech_final) {
         setCurrentInterviewerInterim("");
-
         const newParagraph = interviewerParagraphRef.current
           ? `${interviewerParagraphRef.current} ${transcript.trim()}`
           : transcript.trim();
         interviewerParagraphRef.current = newParagraph;
-
         setCurrentInterviewerParagraph(newParagraph);
 
         interviewerPauseTimerRef.current = setTimeout(() => {
           if (interviewerParagraphRef.current) {
             const finalText = interviewerParagraphRef.current;
-
             setInterviewerTranscript((transcripts) => [
               ...transcripts,
               {
@@ -629,7 +301,7 @@ async function handleManualGenerate(text) {
                   second: "2-digit",
                 }),
                 id: Date.now() + Math.random(),
-                stream: "interviewer"
+                stream: "interviewer",
               },
             ]);
 
@@ -641,10 +313,7 @@ async function handleManualGenerate(text) {
                 is_final: true,
                 speech_final: true,
               });
-              console.log(
-                "📤 Sent to Q&A:",
-                finalText.substring(0, 50) + "..."
-              );
+              console.log("📤 Sent to Q&A:", finalText.substring(0, 50) + "...");
             }
 
             interviewerParagraphRef.current = "";
@@ -781,7 +450,6 @@ async function handleManualGenerate(text) {
       setShowTabModal(false);
     } catch (err) {
       console.error("System audio error:", err);
-
       if (err.name === "NotAllowedError") {
         setTabAudioError("Screen share denied");
       } else if (err.message.includes("No audio track")) {
@@ -813,7 +481,7 @@ async function handleManualGenerate(text) {
             second: "2-digit",
           }),
           id: Date.now() + Math.random(),
-          stream: "candidate"
+          stream: "candidate",
         },
       ]);
       candidateParagraphRef.current = "";
@@ -831,6 +499,7 @@ async function handleManualGenerate(text) {
             second: "2-digit",
           }),
           id: Date.now() + Math.random(),
+          stream: "interviewer",
         },
       ]);
 
@@ -877,15 +546,14 @@ async function handleManualGenerate(text) {
       reconnectingDeepgramWsRef.current.close();
       reconnectingDeepgramWsRef.current = null;
     }
-    deepgramWsRef.current = null;
 
+    deepgramWsRef.current = null;
     console.log("✓ Deepgram stopped");
   };
 
   // ============================================================================
   // RIGHT PANEL: Q&A WITH AUTOMATIC RECONNECTION
   // ============================================================================
-
   const connectQA = () => {
     return new Promise((resolve, reject) => {
       const qaUrl = getWebSocketUrl("/ws/live-interview");
@@ -914,7 +582,6 @@ async function handleManualGenerate(text) {
 
             case "answer_ready":
               console.log("💬 Answer:", data);
-
               if (
                 !data.answer ||
                 typeof data.answer !== "string" ||
@@ -925,19 +592,13 @@ async function handleManualGenerate(text) {
                 break;
               }
 
-              console.log(
-                "✅ Valid answer:",
-                data.answer.substring(0, 100) + "..."
-              );
-
+              console.log("✅ Valid answer:", data.answer.substring(0, 100) + "...");
               setCurrentAnswer(data.answer);
               setIsGenerating(false);
 
               const streamingDuration = data.answer.length * 20 + 500;
-
               setTimeout(() => {
                 setIsStreamingComplete(true);
-
                 addQA({
                   question: data.question || currentQuestion,
                   answer: data.answer,
@@ -1033,8 +694,7 @@ async function handleManualGenerate(text) {
     setQaList((prev) => {
       const isDuplicate = prev.some(
         (item) =>
-          item.question.trim().toLowerCase() ===
-          qa.question.trim().toLowerCase()
+          item.question.trim().toLowerCase() === qa.question.trim().toLowerCase()
       );
       if (isDuplicate) return prev;
 
@@ -1046,13 +706,10 @@ async function handleManualGenerate(text) {
   const startRecording = async () => {
     try {
       setTabAudioError("");
-
       await connectDeepgram();
       await startMicrophoneCapture();
       setShowTabModal(true);
-
       await connectQA();
-
       setIsRecording(true);
       setDeepgramStatus("🎤 Recording (Select Tab)");
       setQaStatus("🤖 Q&A Active");
@@ -1070,7 +727,6 @@ async function handleManualGenerate(text) {
     setIsRecording(false);
     setDeepgramStatus("Stopped");
     setQaStatus("Stopped");
-
     candidateParagraphRef.current = "";
     interviewerParagraphRef.current = "";
     setCurrentCandidateParagraph("");
@@ -1088,48 +744,6 @@ async function handleManualGenerate(text) {
     }
   };
 
-  const generatePDF = () => {
-    if (!qaList || qaList.length === 0) {
-      alert("No Q&A data");
-      return;
-    }
-
-    const doc = new jsPDF();
-    let y = 10;
-
-    doc.setFontSize(16);
-    doc.text("Interview Q&A", 10, y);
-    y += 10;
-
-    if (personaData) {
-      doc.setFontSize(10);
-      doc.text(`${personaData.position} @ ${personaData.company_name}`, 10, y);
-      y += 6;
-    }
-
-    if (domain) {
-      doc.text(`Domain: ${domain}`, 10, y);
-      y += 10;
-    }
-
-    doc.setFontSize(12);
-    qaList.forEach((item, index) => {
-      if (y > 260) {
-        doc.addPage();
-        y = 10;
-      }
-
-      doc.text(`Q${index + 1}: ${item.question}`, 10, y);
-      y += 10;
-
-      const lines = doc.splitTextToSize(`A: ${item.answer}`, 180);
-      doc.text(lines, 10, y);
-      y += lines.length * 7 + 5;
-    });
-
-    doc.save(`Interview_QnA_${new Date().toISOString().split("T")[0]}.pdf`);
-  };
-
   useEffect(() => {
     return () => {
       stopDeepgramCapture();
@@ -1139,598 +753,80 @@ async function handleManualGenerate(text) {
 
   if (loading) {
     return (
-      <div className="h-screen bg-gray-950 flex items-center justify-center">
-        <div className="text-white text-lg">Loading...</div>
+      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+        <div className="text-white text-xl">Loading...</div>
       </div>
     );
   }
 
   if (!user) return null;
 
-  const currentTranscript =
-    activeView === "interviewer" ? interviewerTranscript : candidateTranscript;
-  const currentParagraph =
-    activeView === "interviewer"
-      ? currentInterviewerParagraph
-      : currentCandidateParagraph;
-  const currentInterim =
-    activeView === "interviewer"
-      ? currentInterviewerInterim
-      : currentCandidateInterim;
-
   return (
-    <div className="h-screen bg-gray-950 text-gray-100 flex flex-col">
-      {/* Header */}
-      <header className="bg-gray-900 border-b border-gray-800 px-6 py-4">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-4">
-            <button
-              onClick={() => navigate("/interview")}
-              className="text-gray-400 hover:text-gray-200 transition-colors"
-            >
-              <ArrowLeft className="w-5 h-5" />
-            </button>
-            <div>
-              <h1 className="text-xl font-semibold text-white">
-                {personaData
-                  ? `${personaData.position} @ ${personaData.company_name}`
-                  : "Interview Assistant"}
-              </h1>
-              <p className="text-xs text-gray-500 mt-0.5">
-                Real-time transcription & AI Q&A
-              </p>
-            </div>
-          </div>
+    <div className="min-h-screen bg-gray-950 flex flex-col">
+      <InterviewHeader
+        personaData={personaData}
+        domain={domain}
+        isRecording={isRecording}
+        onStartRecording={startRecording}
+        onStopRecording={stopRecording}
+        onSettingsClick={() => setShowSettings(true)}
+        onBackClick={() => navigate("/interview")}
+        onExit={() => navigate("/interview")}
+      />
 
-          <div className="flex items-center gap-3">
-            <button
-              onClick={isRecording ? stopRecording : startRecording}
-              className={`flex items-center gap-2 px-6 py-3 rounded-lg font-semibold text-lg transition-all transform hover:scale-105 shadow-2xl ${
-                isRecording
-                  ? "bg-red-600 hover:bg-red-700 shadow-red-500/50"
-                  : "bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 shadow-blue-500/50"
-              }`}
-            >
-              {isRecording ? (
-                <>
-                  <MicOff className="w-5 h-5" />
-                  Stop Recording
-                </>
-              ) : (
-                <>
-                  <Mic className="w-5 h-5" />
-                  Start Recording
-                </>
-              )}
-            </button>
-
-            {isRecording && (
-              <div className="flex items-center gap-2 text-red-400 animate-pulse">
-                <div className="w-3 h-3 bg-red-500 rounded-full"></div>
-                <span className="text-sm font-medium">Recording</span>
-              </div>
-            )}
-
-            <button
-              onClick={generatePDF}
-              className="p-2 bg-gray-800 hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-50"
-              disabled={qaList.length === 0}
-            >
-              <Download className="w-5 h-5" />
-            </button>
-
-            <button
-              onClick={() => setShowSettings(true)}
-              className="p-2 bg-gray-800 hover:bg-gray-700 rounded-lg transition-colors"
-            >
-              <Settings className="w-5 h-5" />
-            </button>
-
-            <button
-              onClick={() => navigate("/interview")}
-              className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg font-medium transition-colors"
-            >
-              Exit
-            </button>
-          </div>
-        </div>
-
-        {personaData && (
-          <div className="flex items-center gap-6 text-sm text-gray-400">
-            <span>
-              <strong className="text-purple-400">Position:</strong>{" "}
-              {personaData.position}
-            </span>
-            <span>
-              <strong className="text-purple-400">Company:</strong>{" "}
-              {personaData.company_name}
-            </span>
-            {domain && (
-              <span>
-                <strong className="text-pink-400">Domain:</strong> {domain}
-              </span>
-            )}
-          </div>
-        )}
-      </header>
-
-      {/* Tab Modal */}
       {showTabModal && isRecording && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 backdrop-blur-sm">
-          <div className="bg-gray-900 rounded-xl p-6 w-full max-w-lg border border-gray-800 shadow-2xl">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-semibold text-white">
-                📡 Enable Interviewer Audio
-              </h3>
-              <button
-                onClick={() => {
-                  setShowTabModal(false);
-                  if (!interviewerStreamRef.current) {
-                    stopRecording();
-                  }
-                }}
-                className="text-gray-400 hover:text-gray-200"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              <div className="bg-yellow-900/20 border border-yellow-700/50 rounded-lg p-4">
-                <div className="flex items-start gap-3">
-                  <AlertCircle className="w-5 h-5 text-yellow-400 flex-shrink-0 mt-0.5" />
-                  <div className="text-sm text-yellow-200">
-                    <p className="font-semibold mb-2">
-                      Enable "Share tab audio"
-                    </p>
-                    <ol className="list-decimal list-inside space-y-1 text-xs">
-                      <li>Click "Select Tab Audio"</li>
-                      <li>Choose interview tab (Zoom/Meet)</li>
-                      <li>
-                        <strong className="text-yellow-300">
-                          Check "Share tab audio"
-                        </strong>
-                      </li>
-                      <li>Click "Share"</li>
-                    </ol>
-                  </div>
-                </div>
-              </div>
-
-              {tabAudioError && (
-                <div className="bg-red-900/20 border border-red-700/50 rounded-lg p-3">
-                  <p className="text-red-300 text-sm">{tabAudioError}</p>
-                </div>
-              )}
-
-              <button
-                onClick={handleTabAudioSelection}
-                className="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white py-3 rounded-lg font-medium"
-              >
-                Select Tab Audio
-              </button>
-
-              <p className="text-xs text-gray-400 text-center">
-                Microphone already active. This captures interviewer voice.
-              </p>
-            </div>
-          </div>
-        </div>
+        <TabAudioModal
+          onSelect={handleTabAudioSelection}
+          onClose={() => {
+            setShowTabModal(false);
+            if (!interviewerStreamRef.current) {
+              stopRecording();
+            }
+          }}
+          errorMessage={tabAudioError}
+        />
       )}
 
-      {/* Main Content */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* LEFT: Deepgram Dual-Stream Transcription */}
-        <div className="w-1/2 border-r border-gray-800 flex flex-col">
-          <div className="bg-gray-900 border-b border-gray-800 flex items-center">
-            <button
-              onClick={() => setActiveView("interviewer")}
-              className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-all border-b-2 ${
-                activeView === "interviewer"
-                  ? "border-green-500 text-green-400 bg-gray-800"
-                  : "border-transparent text-gray-400 hover:text-gray-300"
-              }`}
-            >
-              <Volume2 className="w-4 h-4" />
-              Interviewer
-              {interviewerTranscript.length > 0 && (
-                <span className="ml-1 text-xs bg-green-900/30 text-green-400 px-2 py-0.5 rounded-full">
-                  {interviewerTranscript.length}
-                </span>
-              )}
-            </button>
+      <div className="flex-1 grid grid-cols-2 gap-0 overflow-hidden">
+        <TranscriptPanel
+          activeView={activeView}
+          onViewChange={setActiveView}
+          interviewerTranscript={interviewerTranscript}
+          candidateTranscript={candidateTranscript}
+          currentInterviewerParagraph={currentInterviewerParagraph}
+          currentCandidateParagraph={currentCandidateParagraph}
+          currentInterviewerInterim={currentInterviewerInterim}
+          currentCandidateInterim={currentCandidateInterim}
+          isPaused={isPaused}
+          onPauseToggle={() => setIsPaused(!isPaused)}
+          isRecording={isRecording}
+          onManualGenerate={handleManualGenerate}
+          autoScroll={settings.autoScroll}
+        />
 
-            <button
-              onClick={() => setActiveView("candidate")}
-              className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-all border-b-2 ${
-                activeView === "candidate"
-                  ? "border-blue-500 text-blue-400 bg-gray-800"
-                  : "border-transparent text-gray-400 hover:text-gray-300"
-              }`}
-            >
-              <Mic className="w-4 h-4" />
-              Candidate (You)
-              {candidateTranscript.length > 0 && (
-                <span className="ml-1 text-xs bg-blue-900/30 text-blue-400 px-2 py-0.5 rounded-full">
-                  {candidateTranscript.length}
-                </span>
-              )}
-            </button>
-
-            <div className="ml-auto px-4 py-3">
-              <button
-                onClick={() => setIsPaused(!isPaused)}
-                className="p-2 hover:bg-gray-800 rounded-lg transition-colors"
-                disabled={!isRecording}
-              >
-                {isPaused ? (
-                  <Play className="w-4 h-4" />
-                ) : (
-                  <Pause className="w-4 h-4" />
-                )}
-              </button>
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-            {currentTranscript.length === 0 &&
-            !currentParagraph &&
-            !currentInterim ? (
-              <div className="h-full flex items-center justify-center">
-                <div className="text-center">
-                  <div className="mb-4">
-                    {activeView === "interviewer" ? (
-                      <Volume2 className="w-16 h-16 mx-auto text-gray-700" />
-                    ) : (
-                      <Mic className="w-16 h-16 mx-auto text-gray-700" />
-                    )}
-                  </div>
-                  <p className="text-gray-500 mb-2 font-medium">
-                    {activeView === "interviewer"
-                      ? "Interviewer speech"
-                      : "Your speech"}
-                  </p>
-                  <p className="text-gray-600 text-sm">
-                    Click "Start Recording" to begin
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <>
-                {currentTranscript.map((entry) => (
-                  <div
-                    key={entry.id}
-                    className="bg-gray-900 rounded-lg p-4 border border-gray-800 hover:border-gray-700 transition-colors"
-                  >
-                    <div className="flex justify-between items-start mb-2">
-                      <span
-                        className={`text-xs font-semibold px-2 py-1 rounded ${
-                          entry.stream === "interviewer"
-                            ? "text-green-400 bg-green-900/30"
-                            : "text-blue-400 bg-blue-900/30"
-                        }`}
-                      >
-                        {entry.stream === "interviewer" ? "Interviewer" : "You"}
-                      </span>
-                      <span className="text-xs text-gray-500">
-                        {entry.timestamp}
-                      </span>
-                    </div>
-
-                    <p className="text-gray-200 leading-relaxed">
-                      {entry.text}
-                    </p>
-
-                    {entry.stream === "interviewer" && (
-                      <button
-                        onClick={() => handleManualGenerate(entry.text)}
-                        className="mt-3 px-3 py-1 border border-gray-700 bg-gray-800 text-gray-300 rounded text-sm hover:bg-gray-700"
-                      >
-                        Generate Answer
-                      </button>
-                    )}
-                  </div>
-                ))}
-
-                {currentParagraph && (
-                  <div
-                    className={`bg-gray-900/50 rounded-lg p-4 border-2 ${
-                      activeView === "interviewer"
-                        ? "border-green-500/30"
-                        : "border-blue-500/30"
-                    } animate-pulse`}
-                  >
-                    <div className="flex justify-between items-start mb-2">
-                      <span
-                        className={`text-xs font-semibold flex items-center gap-2 px-2 py-1 rounded ${
-                          activeView === "interviewer"
-                            ? "text-green-300 bg-green-900/20"
-                            : "text-blue-300 bg-blue-900/20"
-                        }`}
-                      >
-                        {activeView === "interviewer" ? "Interviewer" : "You"}
-                        <span className="text-xs">speaking...</span>
-                      </span>
-                    </div>
-                    <p className="text-gray-200 leading-relaxed">
-                      {currentParagraph}
-                    </p>
-                  </div>
-                )}
-
-                {!currentParagraph && currentInterim && (
-                  <div
-                    className={`bg-gray-900/50 rounded-lg p-4 border-2 ${
-                      activeView === "interviewer"
-                        ? "border-green-500/20"
-                        : "border-blue-500/20"
-                    }`}
-                  >
-                    <div className="flex justify-between items-start mb-2">
-                      <span
-                        className={`text-xs font-semibold flex items-center gap-2 px-2 py-1 rounded ${
-                          activeView === "interviewer"
-                            ? "text-green-300 bg-green-900/20"
-                            : "text-blue-300 bg-blue-900/20"
-                        }`}
-                      >
-                        {activeView === "interviewer" ? "Interviewer" : "You"}
-                        <span className="text-xs opacity-60">interim...</span>
-                      </span>
-                    </div>
-                    <p className="text-gray-300 leading-relaxed opacity-70 italic">
-                      {currentInterim}
-                    </p>
-                  </div>
-                )}
-              </>
-            )}
-            <div ref={transcriptEndRef} />
-          </div>
-        </div>
-
-        {/* RIGHT: Q&A Copilot */}
-        <div className="w-1/2 flex flex-col">
-          <div className="bg-gray-900 px-6 py-3 border-b border-gray-800 flex items-center justify-between">
-            <div>
-              <h2 className="text-lg font-semibold text-white">
-                Interview Copilot
-              </h2>
-              <p className="text-xs text-gray-500 mt-0.5">AI Q&A (Automatic)</p>
-            </div>
-            <div className="text-sm text-gray-400 flex items-center gap-2">
-              <span className="bg-gray-800 px-3 py-1 rounded-full">
-                {qaList.length} answer{qaList.length !== 1 ? "s" : ""}
-              </span>
-              {isGenerating && (
-                <span className="flex items-center gap-1 text-purple-400">
-                  <span className="w-2 h-2 bg-purple-400 rounded-full animate-pulse"></span>
-                  generating...
-                </span>
-              )}
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-y-auto px-6 py-4">
-            {qaList.length === 0 && !currentQuestion ? (
-              <div className="h-full flex items-center justify-center">
-                <div className="text-center">
-                  <div className="mb-4">
-                    <div className="w-16 h-16 mx-auto bg-gray-800 rounded-full flex items-center justify-center">
-                      <span className="text-3xl">🤖</span>
-                    </div>
-                  </div>
-                  <p className="text-gray-500 mb-2 font-medium">
-                    AI answers appear here
-                  </p>
-                  <p className="text-gray-600 text-sm">
-                    Click "Start Recording" to begin
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {qaList.length > 0 && <QAList qaList={qaList} />}
-
-                {currentQuestion && (
-                  <div className="bg-gradient-to-r from-purple-900/30 to-blue-900/30 border-2 border-purple-500/50 rounded-lg p-5 shadow-lg">
-                    <div className="mb-4">
-                      <div className="flex items-center gap-2 mb-3">
-                        <span className="text-xs font-semibold text-purple-300 bg-purple-900/50 px-3 py-1 rounded-full">
-                          ❓ CURRENT QUESTION
-                        </span>
-                      </div>
-                      <p className="text-white font-medium text-lg leading-relaxed">
-                        {currentQuestion}
-                      </p>
-                    </div>
-
-                    <div className="border-t border-purple-500/30 pt-4">
-                      <div className="flex items-center gap-2 mb-3">
-                        <span className="text-xs font-semibold text-green-300 bg-green-900/50 px-3 py-1 rounded-full">
-                          💬 ANSWER
-                        </span>
-                        {isGenerating && !currentAnswer && (
-                          <span className="text-xs text-purple-300 flex items-center gap-1">
-                            <span className="w-2 h-2 bg-purple-400 rounded-full animate-pulse"></span>
-                            Analyzing...
-                          </span>
-                        )}
-                        {currentAnswer && !isStreamingComplete && (
-                          <span className="text-xs text-green-400 flex items-center gap-1">
-                            <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse"></span>
-                            streaming...
-                          </span>
-                        )}
-                      </div>
-
-                      {currentAnswer ? (
-                        <StreamingAnswer
-                          text={currentAnswer}
-                          isComplete={isStreamingComplete}
-                        />
-                      ) : (
-                        <div className="flex items-center gap-2">
-                          <div className="w-2 h-2 bg-purple-400 rounded-full animate-pulse"></div>
-                          <div
-                            className="w-2 h-2 bg-purple-400 rounded-full animate-pulse"
-                            style={{ animationDelay: "0.2s" }}
-                          ></div>
-                          <div
-                            className="w-2 h-2 bg-purple-400 rounded-full animate-pulse"
-                            style={{ animationDelay: "0.4s" }}
-                          ></div>
-                          <span className="text-sm text-gray-300 ml-2">
-                            Preparing answer...
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-            <div ref={copilotEndRef} />
-          </div>
-        </div>
+        <QACopilot
+          qaList={qaList}
+          currentQuestion={currentQuestion}
+          currentAnswer={currentAnswer}
+          isGenerating={isGenerating}
+          isStreamingComplete={isStreamingComplete}
+          autoScroll={settings.autoScroll}
+        />
       </div>
 
-      {/* Status Bar */}
-      <div className="bg-gray-900 border-t border-gray-800 px-6 py-3 flex items-center justify-center gap-6">
-        <div className="flex items-center gap-2">
-          <div
-            className={`w-2 h-2 rounded-full ${
-              deepgramStatus.includes("Recording")
-                ? "bg-green-500 animate-pulse"
-                : deepgramStatus.includes("Error") ||
-                    deepgramStatus.includes("Reconnecting")
-                  ? "bg-yellow-500"
-                  : "bg-gray-600"
-            }`}
-          />
-          <span className="text-sm text-gray-400">
-            Deepgram: {deepgramStatus}
-          </span>
-        </div>
+      <StatusBar
+        deepgramStatus={deepgramStatus}
+        qaStatus={qaStatus}
+        isGenerating={isGenerating}
+        isPaused={isPaused}
+      />
 
-        <div className="h-4 w-px bg-gray-700" />
-
-        <div className="flex items-center gap-2">
-          <div
-            className={`w-2 h-2 rounded-full ${
-              qaStatus.includes("Active")
-                ? "bg-blue-500 animate-pulse"
-                : qaStatus.includes("Error") ||
-                    qaStatus.includes("Reconnecting")
-                  ? "bg-yellow-500"
-                  : "bg-gray-600"
-            }`}
-          />
-          <span className="text-sm text-gray-400">Q&A: {qaStatus}</span>
-        </div>
-
-        {isGenerating && (
-          <>
-            <div className="h-4 w-px bg-gray-700" />
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
-              <span className="text-sm text-purple-400">Processing...</span>
-            </div>
-          </>
-        )}
-
-        {isPaused && (
-          <>
-            <div className="h-4 w-px bg-gray-700" />
-            <div className="flex items-center gap-2">
-              <Pause className="w-3 h-3 text-orange-400" />
-              <span className="text-sm text-orange-400">Paused</span>
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* Settings Modal */}
       {showSettings && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 backdrop-blur-sm">
-          <div className="bg-gray-900 rounded-xl p-6 w-full max-w-md border border-gray-800 shadow-2xl">
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-xl font-semibold text-white">Settings</h3>
-              <button
-                onClick={() => setShowSettings(false)}
-                className="text-gray-400 hover:text-gray-200"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-                <h4 className="text-sm font-medium mb-3 text-purple-400">
-                  Configuration
-                </h4>
-                <div className="space-y-2 text-sm">
-                  <div className="flex justify-between py-1">
-                    <span className="text-gray-400">Style:</span>
-                    <span className="text-white font-medium">
-                      {settings.selectedResponseStyleId ||
-                        settings.responseStyle}
-                    </span>
-                  </div>
-                  <div className="flex justify-between py-1">
-                    <span className="text-gray-400">Language:</span>
-                    <span className="text-white font-medium">
-                      {settings.audioLanguage}
-                    </span>
-                  </div>
-                  <div className="flex justify-between py-1">
-                    <span className="text-gray-400">Pause Time:</span>
-                    <span className="text-white font-medium">
-                      {settings.pauseInterval}s
-                    </span>
-                  </div>
-                  <div className="flex justify-between py-1">
-                    <span className="text-gray-400">Coding:</span>
-                    <span className="text-white font-medium">
-                      {settings.programmingLanguage}
-                    </span>
-                  </div>
-                  <div className="flex justify-between py-1">
-                    <span className="text-gray-400">Model:</span>
-                    <span className="text-white font-medium">
-                      {settings.defaultModel}
-                    </span>
-                  </div>
-                  <div className="flex justify-between py-1">
-                    <span className="text-gray-400">Backend:</span>
-                    <span className="text-green-400 font-medium text-xs">
-                      {BACKEND_URL}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="bg-blue-900/20 border border-blue-800/50 rounded-lg p-4">
-                <h4 className="text-sm font-medium mb-2 text-blue-300">
-                  💡 Render Optimized
-                </h4>
-                <ul className="text-gray-400 text-sm space-y-1 list-disc list-inside">
-                  <li>30s client keepalive (Render 60s timeout)</li>
-                  <li>30s server keepalive (dual protection)</li>
-                  <li>Immediate handshake on connection</li>
-                  <li>Automatic reconnection with backoff</li>
-                </ul>
-              </div>
-
-              <button
-                onClick={() => setShowSettings(false)}
-                className="w-full bg-purple-600 hover:bg-purple-700 text-white py-2.5 rounded-lg font-medium"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
+        <SettingsModal
+          settings={settings}
+          backendUrl={BACKEND_URL}
+          onClose={() => setShowSettings(false)}
+        />
       )}
     </div>
   );
