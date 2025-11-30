@@ -1,5 +1,5 @@
 // ============================================================================
-// InterviewAssist.jsx - Main Container Component
+// InterviewAssist.jsx - Main Container Component (STICKY LEFT PANEL)
 // ============================================================================
 import React, { useState, useEffect, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -230,6 +230,7 @@ export default function InterviewAssist() {
     });
   };
 
+  // 🔥 FIXED: Word-by-word display handler
   const handleDeepgramTranscript = (data) => {
     const { stream, transcript, is_final, speech_final } = data;
 
@@ -242,7 +243,9 @@ export default function InterviewAssist() {
         clearTimeout(candidatePauseTimerRef.current);
       }
 
-      if (is_final || speech_final) {
+      if (!is_final) {
+        setCurrentCandidateInterim(transcript);
+      } else {
         setCurrentCandidateInterim("");
         const newParagraph = candidateParagraphRef.current
           ? `${candidateParagraphRef.current} ${transcript.trim()}`
@@ -270,17 +273,15 @@ export default function InterviewAssist() {
             setCurrentCandidateParagraph("");
           }
         }, pauseInterval);
-      } else {
-        if (!candidateParagraphRef.current) {
-          setCurrentCandidateInterim(transcript);
-        }
       }
     } else if (stream === "interviewer") {
       if (interviewerPauseTimerRef.current) {
         clearTimeout(interviewerPauseTimerRef.current);
       }
 
-      if (is_final || speech_final) {
+      if (!is_final) {
+        setCurrentInterviewerInterim(transcript);
+      } else {
         setCurrentInterviewerInterim("");
         const newParagraph = interviewerParagraphRef.current
           ? `${interviewerParagraphRef.current} ${transcript.trim()}`
@@ -305,7 +306,6 @@ export default function InterviewAssist() {
               },
             ]);
 
-            // Send to Q&A using reconnecting websocket
             if (reconnectingQaWsRef.current) {
               reconnectingQaWsRef.current.send({
                 type: "transcript",
@@ -320,10 +320,6 @@ export default function InterviewAssist() {
             setCurrentInterviewerParagraph("");
           }
         }, pauseInterval);
-      } else {
-        if (!interviewerParagraphRef.current) {
-          setCurrentInterviewerInterim(transcript);
-        }
       }
     }
   };
@@ -627,7 +623,6 @@ export default function InterviewAssist() {
         if (status === "connected") {
           setQaStatus("Initializing...");
 
-          // Send init message
           const initMessage = {
             type: "init",
             domain: domain || "Technical",
@@ -787,31 +782,38 @@ export default function InterviewAssist() {
         />
       )}
 
-      <div className="flex-1 grid grid-cols-2 gap-0 overflow-hidden">
-        <TranscriptPanel
-          activeView={activeView}
-          onViewChange={setActiveView}
-          interviewerTranscript={interviewerTranscript}
-          candidateTranscript={candidateTranscript}
-          currentInterviewerParagraph={currentInterviewerParagraph}
-          currentCandidateParagraph={currentCandidateParagraph}
-          currentInterviewerInterim={currentInterviewerInterim}
-          currentCandidateInterim={currentCandidateInterim}
-          isPaused={isPaused}
-          onPauseToggle={() => setIsPaused(!isPaused)}
-          isRecording={isRecording}
-          onManualGenerate={handleManualGenerate}
-          autoScroll={settings.autoScroll}
-        />
+      {/* 🔥 INDEPENDENT SCROLLING: Left stays fixed, right scrolls freely */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* LEFT PANEL - COMPLETELY INDEPENDENT */}
+        <div className="w-1/2 flex flex-col border-r border-gray-800 overflow-hidden">
+          <TranscriptPanel
+            activeView={activeView}
+            onViewChange={setActiveView}
+            interviewerTranscript={interviewerTranscript}
+            candidateTranscript={candidateTranscript}
+            currentInterviewerParagraph={currentInterviewerParagraph}
+            currentCandidateParagraph={currentCandidateParagraph}
+            currentInterviewerInterim={currentInterviewerInterim}
+            currentCandidateInterim={currentCandidateInterim}
+            isPaused={isPaused}
+            onPauseToggle={() => setIsPaused(!isPaused)}
+            isRecording={isRecording}
+            onManualGenerate={handleManualGenerate}
+            autoScroll={settings.autoScroll}
+          />
+        </div>
 
-        <QACopilot
-          qaList={qaList}
-          currentQuestion={currentQuestion}
-          currentAnswer={currentAnswer}
-          isGenerating={isGenerating}
-          isStreamingComplete={isStreamingComplete}
-          autoScroll={settings.autoScroll}
-        />
+        {/* RIGHT PANEL - INDEPENDENT SCROLLING */}
+        <div className="w-1/2 flex flex-col overflow-hidden">
+          <QACopilot
+            qaList={qaList}
+            currentQuestion={currentQuestion}
+            currentAnswer={currentAnswer}
+            isGenerating={isGenerating}
+            isStreamingComplete={isStreamingComplete}
+            autoScroll={settings.autoScroll}
+          />
+        </div>
       </div>
 
       <StatusBar

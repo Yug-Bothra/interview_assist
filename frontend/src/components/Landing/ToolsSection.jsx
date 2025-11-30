@@ -1,26 +1,29 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
-
+import homeimage4 from "../../assets/homeimages/homeimage4.png";
+import homeimage5 from "../../assets/homeimages/homeimage5.png";
+import homeimage6 from "../../assets/homeimages/homeimage6.png";
 export default function ToolsSection() {
   const navigate = useNavigate();
 
   const tools = [
-    { 
-      title: "AI Mock Interview", 
-      desc: "Immersive interview simulation with extensive question banks", 
-      img: "https://framerusercontent.com/images/jY8B1tXPxXT2ojQi7WemDeItIEk.png?width=1862&height=1250" 
-    },
-    { 
-      title: "AI Interview Copilot", 
-      desc: "Instant, personalized, actionable support during live interviews", 
-      img: "https://framerusercontent.com/images/XZi002ckJANbAzVYZZUPAx0lZM.png?width=1062&height=682" 
-    },
-    { 
-      title: "AI Resume Editor", 
-      desc: "Generate winning resume that passes screening and stand out", 
-      img: "https://framerusercontent.com/images/7Gfj7yHHQyk5gh7BXhQffLCmVtY.png?width=1206&height=722" 
-    }
-  ];
+  { 
+    title: "AI Mock Interview", 
+    desc: "Immersive interview simulation with extensive question banks", 
+    img: homeimage4
+  },
+  { 
+    title: "AI Interview Copilot", 
+    desc: "Instant, personalized, actionable support during live interviews", 
+    img: homeimage5
+  },
+  { 
+    title: "AI Resume Editor", 
+    desc: "Generate winning resume that passes screening and stand out", 
+    img: homeimage6
+  }
+];
+
 
   return (
     <section className="py-20 bg-white">

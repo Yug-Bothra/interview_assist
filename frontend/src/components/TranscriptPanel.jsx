@@ -1,5 +1,5 @@
 import React, { useRef, useEffect } from "react";
-import { Volume2, Mic, Pause, Play } from "lucide-react";
+import { Volume2, Mic, Pause, Play, Activity } from "lucide-react";
 
 export default function TranscriptPanel({
   activeView,
@@ -44,7 +44,7 @@ export default function TranscriptPanel({
       : currentCandidateInterim;
 
   return (
-    <div className="flex flex-col h-full bg-[#111111]"> {/* lighter black */}
+    <div className="flex flex-col h-full bg-[#111111]">
       
       {/* TOP TABS */}
       <div className="flex items-center justify-between border-b border-[#2A2A2A] bg-[#111111]">
@@ -54,7 +54,7 @@ export default function TranscriptPanel({
             onClick={() => onViewChange("interviewer")}
             className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-all border-b-2 ${
               activeView === "interviewer"
-                ? "border-purple-500 text-purple-400 bg-[#181818]"   // updated highlight
+                ? "border-purple-500 text-purple-400 bg-[#181818]"
                 : "border-transparent text-gray-400 hover:text-gray-300"
             }`}
           >
@@ -65,6 +65,9 @@ export default function TranscriptPanel({
                 {interviewerTranscript.length}
               </span>
             )}
+            {currentInterviewerInterim && (
+              <Activity className="w-3 h-3 text-purple-400 animate-pulse" />
+            )}
           </button>
 
           {/* CANDIDATE TAB */}
@@ -72,7 +75,7 @@ export default function TranscriptPanel({
             onClick={() => onViewChange("candidate")}
             className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-all border-b-2 ${
               activeView === "candidate"
-                ? "border-amber-400 text-amber-300 bg-[#181818]" // fresh matching color
+                ? "border-amber-400 text-amber-300 bg-[#181818]"
                 : "border-transparent text-gray-400 hover:text-gray-300"
             }`}
           >
@@ -83,6 +86,9 @@ export default function TranscriptPanel({
                 {candidateTranscript.length}
               </span>
             )}
+            {currentCandidateInterim && (
+              <Activity className="w-3 h-3 text-amber-400 animate-pulse" />
+            )}
           </button>
         </div>
 
@@ -91,6 +97,7 @@ export default function TranscriptPanel({
           onClick={onPauseToggle}
           className="p-2 hover:bg-[#1A1A1A] rounded-lg transition-colors mr-2"
           disabled={!isRecording}
+          title={isPaused ? "Resume" : "Pause"}
         >
           {isPaused ? (
             <Play className="w-4 h-4 text-gray-400" />
@@ -100,7 +107,7 @@ export default function TranscriptPanel({
         </button>
       </div>
 
-      {/* CONTENT AREA */}
+      {/* CONTENT AREA - FIXED HEIGHT, SCROLLABLE */}
       <div className="flex-1 overflow-y-auto p-6 space-y-4">
         {currentTranscript.length === 0 && !currentParagraph && !currentInterim ? (
           <div className="flex flex-col items-center justify-center h-full text-center">
@@ -114,11 +121,11 @@ export default function TranscriptPanel({
             <h3 className="text-xl font-semibold text-gray-400 mb-2">
               {activeView === "interviewer" ? "Interviewer speech" : "Your speech"}
             </h3>
-            <p className="text-gray-500">Click "Start Recording" to begin</p>
+            <p className="text-gray-500">Waiting for speech...</p>
           </div>
         ) : (
           <>
-            {/* TRANSCRIPT BLOCKS */}
+            {/* FINALIZED TRANSCRIPT BLOCKS */}
             {currentTranscript.map((entry) => (
               <div
                 key={entry.id}
@@ -131,7 +138,7 @@ export default function TranscriptPanel({
                   <span className="text-xs text-gray-500">{entry.timestamp}</span>
                 </div>
 
-                <p className="text-gray-200 leading-relaxed">{entry.text}</p>
+                <p className="text-gray-200 leading-relaxed whitespace-pre-wrap">{entry.text}</p>
 
                 {entry.stream === "interviewer" && (
                   <button
@@ -144,29 +151,35 @@ export default function TranscriptPanel({
               </div>
             ))}
 
-            {/* LIVE PARAGRAPH */}
+            {/* LIVE PARAGRAPH (FINAL TEXT ACCUMULATING) */}
             {currentParagraph && (
-              <div className="bg-[#1A1A1A] border border-purple-400/30 rounded-lg p-4">
+              <div className="bg-[#1A1A1A] border-2 border-purple-400/40 rounded-lg p-4">
                 <div className="flex items-center gap-2 mb-2">
                   <div className="w-2 h-2 bg-purple-400 rounded-full animate-pulse" />
                   <span className="text-sm font-medium text-purple-300">
                     {activeView === "interviewer" ? "Interviewer" : "You"} speaking...
                   </span>
+                  <span className="text-xs text-gray-500">(final text)</span>
                 </div>
-                <p className="text-gray-200 leading-relaxed">{currentParagraph}</p>
+                <p className="text-gray-200 leading-relaxed whitespace-pre-wrap">
+                  {currentParagraph}
+                </p>
               </div>
             )}
 
-            {/* INTERIM */}
-            {!currentParagraph && currentInterim && (
-              <div className="bg-[#1A1A1A] border border-[#2A2A2A]/50 rounded-lg p-4">
+            {/* LIVE INTERIM (REAL-TIME STREAMING FROM DEEPGRAM) */}
+            {currentInterim && (
+              <div className="bg-[#1A1A1A] border-2 border-dashed border-yellow-500/40 rounded-lg p-4">
                 <div className="flex items-center gap-2 mb-2">
-                  <div className="w-2 h-2 bg-gray-500 rounded-full" />
-                  <span className="text-sm font-medium text-gray-400">
-                    {activeView === "interviewer" ? "Interviewer" : "You"} interim...
+                  <Activity className="w-3 h-3 text-yellow-400 animate-pulse" />
+                  <span className="text-sm font-medium text-yellow-400">
+                    Live interim
                   </span>
+                  <span className="text-xs text-gray-500">(updating)</span>
                 </div>
-                <p className="text-gray-400 italic leading-relaxed">{currentInterim}</p>
+                <p className="text-gray-300 leading-relaxed whitespace-pre-wrap font-mono text-sm">
+                  {currentInterim}
+                </p>
               </div>
             )}
 

@@ -62,13 +62,13 @@ async def websocket_dual_transcribe(websocket: WebSocket):
                     try:
                         message = await asyncio.wait_for(websocket.receive_text(), timeout=0.1)
                     except asyncio.TimeoutError:
-                        continue  # Normal timeout, retry next iteration
+                        continue
 
                     try:
                         data = json.loads(message)
                     except json.JSONDecodeError as e:
                         print(f"❌ Invalid JSON received: {e}")
-                        continue  # Skip this message
+                        continue
 
                     try:
                         msg_type = data.get("type")
@@ -103,7 +103,7 @@ async def websocket_dual_transcribe(websocket: WebSocket):
 
                     except Exception as e:
                         print(f"❌ Audio processing error: {e}")
-                        continue  # Skip malformed audio data and continue
+                        continue
 
             except Exception as e:
                 print(f"❌ Unexpected audio handler error: {e}")
@@ -116,12 +116,15 @@ async def websocket_dual_transcribe(websocket: WebSocket):
                         if not transcript_data:
                             await asyncio.sleep(0.01)
                             continue
+                        
+                        # 🔥 KEY CHANGE: Handle BOTH interim and final results
                         if transcript_data.get("type") == "Results":
                             channel = transcript_data.get("channel", {})
                             alternatives = channel.get("alternatives", [])
                             if alternatives and len(alternatives) > 0:
                                 transcript = alternatives[0].get("transcript", "")
                                 if transcript.strip():
+                                    # Send ALL transcripts (interim AND final)
                                     response = {
                                         "type": "transcript",
                                         "stream": stream.stream_type.value,
