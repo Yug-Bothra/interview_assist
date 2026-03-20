@@ -26,44 +26,50 @@ export default function InterviewAssist() {
   const { user, loading } = useAuth();
 
   // ⭐ MANUAL GENERATE BUTTON HANDLER ⭐
-  async function handleManualGenerate(text) {
-    console.log("🟦 [ManualGenerate] Button clicked with text:", text);
-    try {
-      console.log("🟦 Sending request → /api/manual-generate");
-      const payload = {
-        user_id: user?.id || "anonymous",
-        message: text,
-        model: settings.defaultModel || "gpt-4o",
-      };
-      console.log("🟦 Payload:", payload);
+ async function handleManualGenerate(text) {
+  console.log("🟦 [ManualGenerate] Button clicked with text:", text);
 
-      const res = await fetch("http://127.0.0.1:8000/api/manual-generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+  try {
+    const payload = {
+      user_id: user?.id || "anonymous",
+      message: text,
+      model: settings.defaultModel || "gpt-4o",
+    };
 
-      console.log("🟧 Server responded. Status:", res.status);
-      const data = await res.json();
-      console.log("🟩 Parsed response:", data);
+    console.log("🟦 Payload:", payload);
+    console.log("🌍 Using backend:", BACKEND_URL);
 
-      if (data.answer) {
-        console.log("🟩 Adding answer to UI:", data.answer);
-        setQaList((prev) => [
-          ...prev,
-          {
-            id: Date.now() + Math.random(),
-            question: text,
-            answer: data.answer,
-          },
-        ]);
-      } else {
-        console.warn("⚠️ No answer returned from backend");
-      }
-    } catch (err) {
-      console.error("🔴 Manual generate failed:", err);
+    const res = await fetch(`${BACKEND_URL}/api/manual-generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    console.log("🟧 Server responded. Status:", res.status);
+
+    if (!res.ok) {
+      throw new Error(`HTTP error! status: ${res.status}`);
     }
+
+    const data = await res.json();
+    console.log("🟩 Parsed response:", data);
+
+    if (data.answer) {
+      setQaList((prev) => [
+        ...prev,
+        {
+          id: Date.now() + Math.random(),
+          question: text,
+          answer: data.answer,
+        },
+      ]);
+    } else {
+      console.warn("⚠️ No answer returned from backend");
+    }
+  } catch (err) {
+    console.error("🔴 Manual generate failed:", err);
   }
+}
 
   // Persona & Settings State
   const [personaId] = useState(

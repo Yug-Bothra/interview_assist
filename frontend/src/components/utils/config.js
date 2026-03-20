@@ -1,24 +1,21 @@
-
 // ============================================================================
-// FILE: utils/config.js
+// FINAL CONFIG (NO AUTO-DETECTION)
 // ============================================================================
 
-// Production URLs
-// export const BACKEND_URL = "https://verve-ai-ukec.onrender.com";
-// export const WS_URL = "wss://verve-ai-ukec.onrender.com";
+// 🔥 CHANGE THIS ONLY WHEN NEEDED
+const USE_LOCAL = false; // ✅ set true only for local testing
 
-// Development URLs
-export const BACKEND_URL = "http://0.0.0.0:8000";
-export const WS_URL = "wss://0.0.0.0:8000";
+export const BACKEND_URL = USE_LOCAL
+  ? "http://127.0.0.1:8000"
+  : "https://interview-assist-1.onrender.com";
 
+console.log("🔥 BACKEND_URL:", BACKEND_URL);
+
+// WebSocket URL
 export const getWebSocketUrl = (path) => {
-  const isDevelopment =
-    window.location.hostname === "localhost" ||
-    window.location.hostname === "127.0.0.1";
-
-  if (isDevelopment) {
+  if (USE_LOCAL) {
     return `ws://127.0.0.1:8000${path}`;
   } else {
-    return `${WS_URL}${path}`;
+    return `wss://interview-assist-1.onrender.com${path}`;
   }
 };
