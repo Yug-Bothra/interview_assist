@@ -1,9 +1,8 @@
 import { supabase } from '../database/supabaseClient';
 
-
 export const responseStyleService = {
   /**
-   * Get all available response styles (system + user's custom)
+   * Get all response styles (system + user-defined)
    */
   async getAllStyles(userId) {
     try {
@@ -42,62 +41,89 @@ export const responseStyleService = {
   },
 
   /**
-   * Create a new custom response style
+   * Auto "create or update" style.
+   * - Creates new style
+   * - If UNIQUE VIOLATION → updates instead
+   * - If existing styleId provided → updates directly
    */
-  async createStyle(userId, style) {
+  async createOrUpdateStyle(userId, formData, existingId = null) {
     try {
+      // If editing existing style → update directly
+      if (existingId) {
+        const { data, error } = await supabase
+          .from('response_styles')
+          .update({
+            style_name: formData.styleName,
+            description: formData.description,
+            approximate_length: formData.approximateLength,
+            tone: formData.tone,
+            example_response: formData.exampleResponse,
+          })
+          .eq('id', existingId)
+          .eq('user_id', userId)
+          .eq('is_system_default', false)
+          .select('id')
+          .single();
+
+        if (error) throw error;
+        return data.id;
+      }
+
+      // Create new custom style
       const { data, error } = await supabase
         .from('response_styles')
         .insert({
           user_id: userId,
-          style_name: style.styleName,
-          description: style.description,
-          approximate_length: style.approximateLength,
-          tone: style.tone,
-          example_response: style.exampleResponse,
+          style_name: formData.styleName,
+          description: formData.description,
+          approximate_length: formData.approximateLength,
+          tone: formData.tone,
+          example_response: formData.exampleResponse,
           is_system_default: false
         })
-        .select()
+        .select('id')
         .single();
 
-      if (error) throw error;
-      return data;
+      // Handle UNIQUE CONSTRAINT (style_name + user_id)
+      if (error) {
+        if (error.code === '23505') {
+          // → Update instead
+          const update = await supabase
+            .from('response_styles')
+            .update({
+              description: formData.description,
+              approximate_length: formData.approximateLength,
+              tone: formData.tone,
+              example_response: formData.exampleResponse,
+            })
+            .eq('user_id', userId)
+            .eq('style_name', formData.styleName)
+            .select('id')
+            .single();
+
+          if (update.error) throw update.error;
+          return update.data.id;
+        }
+
+        throw error;
+      }
+
+      return data.id;
     } catch (error) {
-      console.error('Error creating response style:', error);
+      console.error('Error saving style:', error);
       throw error;
     }
   },
 
   /**
-   * Update an existing custom response style
+   * Update direct wrapper
    */
-  async updateStyle(styleId, userId, updates) {
-    try {
-      const { data, error } = await supabase
-        .from('response_styles')
-        .update({
-          style_name: updates.styleName,
-          description: updates.description,
-          approximate_length: updates.approximateLength,
-          tone: updates.tone,
-          example_response: updates.exampleResponse
-        })
-        .eq('id', styleId)
-        .eq('user_id', userId)
-        .eq('is_system_default', false)
-        .select()
-        .single();
-
-      if (error) throw error;
-      return data;
-    } catch (error) {
-      console.error('Error updating response style:', error);
-      throw error;
-    }
+  async updateStyle(styleId, userId, formData) {
+    return this.createOrUpdateStyle(userId, formData, styleId);
   },
 
   /**
-   * Delete a custom response style
+   * Delete a user-defined style
    */
   async deleteStyle(styleId, userId) {
     try {

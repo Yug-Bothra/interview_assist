@@ -3,6 +3,14 @@ import { useNavigate } from "react-router-dom";
 import Navbar from "../../Landing/Navbar";
 import Footer from "../../Landing/Footer";
 
+// Import images
+import image1 from "../../../assets/blogimages/image1.jpg";
+import image2 from "../../../assets/blogimages/image2.jpg";
+import image3 from "../../../assets/blogimages/image3.jpg";
+import image4 from "../../../assets/blogimages/image4.jpg";
+import image5 from "../../../assets/blogimages/image5.jpg";
+import image6 from "../../../assets/blogimages/image6.jpg";
+
 export default function Blog() {
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState("");
@@ -12,47 +20,47 @@ export default function Blog() {
       id: 1,
       date: "Apr 8, 2025",
       title: "30 Most Common Attitude Questions Interview Questions You Should Prepare For",
-      image: "https://images.unsplash.com/photo-1521737711867-e3b97375f902?w=800&h=500&fit=crop",
+      image: image1,
       link: "#"
     },
     {
       id: 2,
       date: "Jan 17, 2025",
       title: "First Round of Interviews More Difficult Than Expected?",
-      image: "https://images.unsplash.com/photo-1588196749597-9ff075ee6b5b?w=800&h=500&fit=crop",
+      image: image2,
       link: "#"
     },
     {
       id: 3,
       date: "Feb 25, 2025",
       title: "Is Final Round AI Legit? Unveiling the Truth About AI-Powered Interview Prep",
-      image: "https://images.unsplash.com/photo-1551434678-e076c223a692?w=800&h=500&fit=crop",
+      image: image3,
       link: "#"
     },
     {
       id: 4,
       date: "Jun 28, 2024",
       title: "Why Should You Join Us? Mastering the Interview Question with Interview Copilot",
-      image: "https://images.unsplash.com/photo-1552664730-d307ca884978?w=800&h=500&fit=crop",
+      image: image4,
       link: "#"
     },
     {
       id: 5,
       date: "Oct 21, 2024",
       title: "Top Features to Look for in an AI Interview Copilot",
-      image: "https://images.unsplash.com/photo-1587825140708-dfaf72ae4b04?w=800&h=500&fit=crop",
+      image: image5,
       link: "#"
     },
     {
       id: 6,
       date: "Feb 10, 2025",
       title: "High School Student Resume Secrets: Unlocking Your Path to a Successful Internship Application",
-      image: "https://images.unsplash.com/photo-1556761175-b413da4baf72?w=800&h=500&fit=crop",
+      image: image6,
       link: "#"
     }
   ];
 
-  const filteredPosts = blogPosts.filter(post =>
+  const filteredPosts = blogPosts.filter((post) =>
     post.title.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
@@ -107,17 +115,22 @@ export default function Blog() {
               className="bg-white rounded-2xl overflow-hidden shadow-sm hover:shadow-xl transition-all duration-300 cursor-pointer border border-gray-100 group"
             >
               <div className="relative overflow-hidden">
+                
+                {/* Updated Image for clean centered card */}
                 <img
                   src={post.image}
                   alt={post.title}
-                  className="w-full h-64 object-cover group-hover:scale-105 transition-transform duration-300"
+                  className="w-full h-[500px] object-contain bg-gray-100 group-hover:scale-105 transition-transform duration-300"
                 />
+
               </div>
+
               <div className="p-8">
                 <p className="text-sm text-gray-500 mb-3">{post.date}</p>
                 <h3 className="text-2xl font-bold text-gray-900 mb-4 group-hover:text-indigo-600 transition-colors">
                   {post.title}
                 </h3>
+
                 <a
                   href={post.link}
                   className="inline-flex items-center text-indigo-600 font-semibold hover:text-indigo-700 transition-colors"

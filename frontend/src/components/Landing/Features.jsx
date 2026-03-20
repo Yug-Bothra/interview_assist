@@ -1,6 +1,11 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
+// ✅ Image imports at the top (important)
+import homeimage1 from "../../assets/homeimages/homeimage1.png";
+import homeimage2 from "../../assets/homeimages/homeimage2.png";
+import homeimage3 from "../../assets/homeimages/homeimage3.png";
+
 export default function Features() {
   const navigate = useNavigate();
   const [activeCategory, setActiveCategory] = useState("Software");
@@ -12,8 +17,7 @@ export default function Features() {
       title: "Personalized interview support tailored to resume, role, & company",
       description:
         "Get customized guidance designed to align with your skills, job description, and the company's expectations",
-      image:
-        "https://framerusercontent.com/images/GdYMwd4ZE6zFiZly0ipERUDxsnA.png?scale-down-to=1024&width=1298&height=804",
+      image: homeimage1,
       color: "indigo",
     },
     {
@@ -22,17 +26,16 @@ export default function Features() {
       title: "From behavioral questions to coding interviews",
       description:
         "Tackle all scenarios confidently with real-time guidance and tailored responses",
-      image:
-        "https://framerusercontent.com/images/UqUDc8ONAON8HuhS5aLpMtjxug.gif?width=500&height=400",
+      image: homeimage2,
       color: "purple",
     },
     {
       icon: "✨",
       label: "Support 25+ Languages",
       title: "Multilingual transcription and real-time interview guidance",
-      description: "Get real-time, personalized interview support in any language",
-      image:
-        "https://framerusercontent.com/images/pCbPcBMqDxcXgPZ5NEHMCCAy7Y.png?scale-down-to=1024&width=1266&height=1256",
+      description:
+        "Get real-time, personalized interview support in any language",
+      image: homeimage3,
       color: "blue",
     },
   ];
@@ -106,7 +109,14 @@ export default function Features() {
     ],
   };
 
-  const categories = ["Software", "Product", "Consulting", "Data", "Marketing", "Finance"];
+  const categories = [
+    "Software",
+    "Product",
+    "Consulting",
+    "Data",
+    "Marketing",
+    "Finance",
+  ];
 
   const categoryIcons = {
     Software: "💻",
@@ -131,10 +141,13 @@ export default function Features() {
               <div className="inline-block px-4 py-2 bg-indigo-50 text-indigo-600 rounded-full text-sm font-medium mb-4">
                 {feature.icon} {feature.label}
               </div>
-              <h2 className="text-4xl font-bold text-gray-900 mb-4">{feature.title}</h2>
-              <p className="text-lg text-gray-600 mb-6">{feature.description}</p>
+              <h2 className="text-4xl font-bold text-gray-900 mb-4">
+                {feature.title}
+              </h2>
+              <p className="text-lg text-gray-600 mb-6">
+                {feature.description}
+              </p>
 
-              {/* ⭐ Redirect to Interview Dashboard */}
               <button
                 onClick={() => navigate("/interview")}
                 className="px-6 py-3 bg-lime-300 text-gray-900 rounded-lg font-semibold hover:bg-lime-400 transition-colors"
@@ -153,7 +166,11 @@ export default function Features() {
                     : "from-blue-100 to-indigo-100"
                 } rounded-2xl shadow-xl flex items-center justify-center overflow-hidden`}
               >
-                <img src={feature.image} alt={feature.label} className="w-full h-full object-cover" />
+                <img
+                  src={feature.image}
+                  alt={feature.label}
+                  className="w-full h-full object-cover"
+                />
               </div>
             </div>
           </div>
@@ -167,10 +184,12 @@ export default function Features() {
             Upgrade to Pro to Unlock All Add-Ons
           </p>
           <h2 className="text-5xl font-bold mb-4">
-            <span className="text-indigo-600">AI Interview Copilot</span> with Expertise Across 100+ Industries
+            <span className="text-indigo-600">AI Interview Copilot</span> with
+            Expertise Across 100+ Industries
           </h2>
           <p className="text-gray-600 text-lg max-w-4xl mx-auto">
-            Supercharge your AI Interview Copilot with insights from 100+ industries
+            Supercharge your AI Interview Copilot with insights from 100+
+            industries
           </p>
         </div>
 
@@ -195,10 +214,12 @@ export default function Features() {
         {/* Job Roles Grid */}
         <div className="grid md:grid-cols-3 gap-6">
           {jobRolesData[activeCategory].map((role) => (
-            <div key={role} className="bg-indigo-50 rounded-xl p-6 hover:shadow-lg transition-shadow">
+            <div
+              key={role}
+              className="bg-indigo-50 rounded-xl p-6 hover:shadow-lg transition-shadow"
+            >
               <h3 className="text-xl font-bold text-gray-900 mb-4">{role}</h3>
 
-              {/* ⭐ Redirect to Interview Dashboard */}
               <button
                 onClick={() => navigate("/interview")}
                 className="px-4 py-2 bg-white rounded-lg font-medium text-gray-700 hover:bg-gray-50 transition-colors shadow-sm"
