@@ -57,3 +57,5 @@ schedule==1.2.2
 # All versions tested for compatibility
 # websockets==14.1 supports 'additional_headers' parameter
 # Compatible with Python 3.8+
+httpx
+python-multipart

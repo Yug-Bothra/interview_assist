@@ -1,0 +1,35 @@
+{
+  "build": {
+    "beforeBuildCommand": "",
+    "beforeDevCommand": "",
+    "distDir": "https://interview-assist-three.vercel.app/",
+    "devPath": "https://interview-assist-three.vercel.app/"
+  },
+
+  "package": {
+    "productName": "InterviewCopilot",
+    "version": "1.0.0"
+  },
+
+  "tauri": {
+    "allowlist": {
+      "http": {
+        "all": true
+      }
+    },
+
+    "security": {
+      "csp": null
+    },
+
+    "windows": [
+      {
+        "label": "main",
+        "title": "InterviewCopilot",
+        "fullscreen": false,
+        "width": 1200,
+        "height": 800
+      }
+    ]
+  }
+}

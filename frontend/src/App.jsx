@@ -20,23 +20,30 @@ import SignUp from "./components/Auth/SignUp";
 import Blog from "./components/Resources/Blog/Blog";
 import ResumeBuilder from "./components/Resources/Blog/ResumeBuilder";
 
+// ⭐ Payment Pages
+import PaymentSuccess from "./components/Payment/PaymentSuccess";
+import PaymentFailure from "./components/Payment/PaymentFailure";
+
 function App() {
   return (
     <AuthProvider>
-      <AppDataProvider> {/* 🔥 LOAD ALL SETTINGS + PERSONAS GLOBALLY */}
+      <AppDataProvider>
         <BrowserRouter>
           <Routes>
 
-            {/* Public Routes */}
+            {/* ---------- PUBLIC ROUTES ---------- */}
             <Route path="/" element={<LandingPage />} />
             <Route path="/pricing" element={<Pricing />} />
             <Route path="/sign-in" element={<SignIn />} />
             <Route path="/sign-up" element={<SignUp />} />
-
             <Route path="/blog" element={<Blog />} />
             <Route path="/resume-builder" element={<ResumeBuilder />} />
 
-            {/* Protected Routes */}
+            {/* ---------- PAYMENT ROUTES ---------- */}
+            <Route path="/payment/success" element={<PaymentSuccess />} />
+            <Route path="/payment/failure" element={<PaymentFailure />} />
+
+            {/* ---------- PROTECTED ROUTES ---------- */}
             <Route
               path="/interview"
               element={
