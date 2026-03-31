@@ -24,3 +24,6 @@ npm install
 npm run dev
 ```
 
+
+
+yug bothra loved to work on this project 
