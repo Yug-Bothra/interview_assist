@@ -39,7 +39,7 @@ def model_status():
         "message": "Model API active",
         "all_models": ALL_MODELS,
         "available_providers": available_providers,
-        "default_provider": "gpt-4o",
+        "default_provider": "gemini-2.0-flash",
         "coding_provider": "gpt-4o"
     }
 

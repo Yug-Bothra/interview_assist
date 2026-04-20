@@ -33,7 +33,7 @@ export default function InterviewAssist() {
     const payload = {
       user_id: user?.id || "anonymous",
       message: text,
-      model: settings.defaultModel || "gpt-4o",
+      model: settings.defaultModel || "gemini-2.0-flash",
     };
 
     console.log("🟦 Payload:", payload);
